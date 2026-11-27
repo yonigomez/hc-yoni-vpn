@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up JDK 17
-        uses: gradle/actions/setup-java@v5
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -49,14 +49,14 @@ jobs:
           cp -r core/src/main/jni/badvpn /tmp/tun2socks-ndk/jni/badvpn
           cp -r core/src/main/jni/libancillary /tmp/tun2socks-ndk/jni/libancillary
 
-          sed 's/^          //' << 'EOF' > /tmp/tun2socks-ndk/jni/Application.mk
+          sed 's/^[[:space:]]*//' << 'EOF' > /tmp/tun2socks-ndk/jni/Application.mk
           APP_ABI := arm64-v8a armeabi-v7a x86_64 x86
           APP_PLATFORM := android-26
           APP_MODULES := tun2socks
           APP_LDFLAGS := -Wl,-z,max-page-size=16384
           EOF
 
-          sed 's/^          //' << 'EOF' > /tmp/tun2socks-ndk/jni/Android.mk
+          sed 's/^[[:space:]]*//' << 'EOF' > /tmp/tun2socks-ndk/jni/Android.mk
           LOCAL_PATH := $(call my-dir)
 
           include $(CLEAR_VARS)
