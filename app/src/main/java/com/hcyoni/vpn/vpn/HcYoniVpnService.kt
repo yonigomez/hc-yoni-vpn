@@ -226,11 +226,11 @@ class HcYoniVpnService : VpnService() {
     private suspend fun runSingleSession(config: VpnConfig) {
         teardownPipeline()
 
-        // Ajustar buffers de socket para baja latencia en juegos (evita bufferbloat 999+)
         val protector: (Socket) -> Unit = { socket ->
             protect(socket)
             try {
                 socket.tcpNoDelay = true
+                socket.trafficClass = 0x10
                 socket.sendBufferSize = 65_536
                 socket.receiveBufferSize = 131_584
             } catch (_: Exception) {
@@ -356,17 +356,13 @@ class HcYoniVpnService : VpnService() {
     private fun establishTunInterface(config: VpnConfig): ParcelFileDescriptor {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
-            .setMtu(1500)
+            .setMtu(1360)
             .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
+            .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
 
-        if (config.useCustomDns) {
-            builder.addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
-            if (config.secondaryDns.isNotBlank()) {
-                builder.addDnsServer(config.secondaryDns)
-            }
-        } else {
-            builder.addDnsServer("198.18.0.2")
+        if (config.secondaryDns.isNotBlank()) {
+            builder.addDnsServer(config.secondaryDns)
         }
 
         if (config.enableIpv6) {
@@ -406,7 +402,7 @@ class HcYoniVpnService : VpnService() {
     private fun writeHevConfigFile(socksPort: Int, config: VpnConfig, logPath: String): File {
         val sb = StringBuilder()
         sb.append("tunnel:\n")
-        sb.append("  mtu: 1500\n")
+        sb.append("  mtu: 1360\n")
         sb.append("  ipv4: 198.18.0.1\n")
         if (config.enableIpv6) {
             sb.append("  ipv6: 'fc00::1'\n")
@@ -415,20 +411,14 @@ class HcYoniVpnService : VpnService() {
         sb.append("  port: ").append(socksPort).append('\n')
         sb.append("  address: 127.0.0.1\n")
         sb.append("  udp: 'udp'\n")
-        if (!config.useCustomDns) {
-            sb.append("mapdns:\n")
-            sb.append("  address: 198.18.0.2\n")
-            sb.append("  port: 53\n")
-            sb.append("  network: 100.64.0.0\n")
-            sb.append("  netmask: 255.192.0.0\n")
-            sb.append("  cache-size: 10000\n")
-        }
         sb.append("misc:\n")
         sb.append("  task-stack-size: 86016\n")
         sb.append("  tcp-buffer-size: 65536\n")
+        sb.append("  udp-recv-buffer-size: 524288\n")
+        sb.append("  udp-copy-buffer-nums: 32\n")
         sb.append("  connect-timeout: 15000\n")
         sb.append("  tcp-read-write-timeout: 300000\n")
-        sb.append("  udp-read-write-timeout: 120000\n")
+        sb.append("  udp-read-write-timeout: 300000\n")
         sb.append("  log-file: '").append(logPath).append("'\n")
         sb.append("  log-level: warn\n")
 
