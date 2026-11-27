@@ -64,6 +64,9 @@ object PayloadInjector {
         socketProtector: (Socket) -> Unit,
         onLog: (String, LogLevel) -> Unit
     ): Socket {
+        val hideServer = config.lockServerAndProxy
+        val hidePayload = config.lockPayload
+
         val rotIdx = rotationCounter.getAndIncrement()
         val effectiveSshHost = pickRotatedValue(config.sshHost, rotIdx)
         val effectiveProxyHost = pickRotatedValue(config.proxyHost, rotIdx)
@@ -89,15 +92,24 @@ object PayloadInjector {
             rawSocket.keepAlive = true
             socketProtector(rawSocket)
 
-            onLog("Conectando TCP a $connectHost:$connectPort...", LogLevel.INFO)
+            onLog(
+                if (hideServer) "Conectando TCP al servidor protegido..." else "Conectando TCP a $connectHost:$connectPort...",
+                LogLevel.INFO
+            )
             rawSocket.connect(InetSocketAddress(connectHost, connectPort), CONNECT_TIMEOUT_MS)
-            onLog("Socket TCP conectado ($connectHost:$connectPort)", LogLevel.INFO)
+            onLog(
+                if (hideServer) "Socket TCP conectado (servidor protegido)" else "Socket TCP conectado ($connectHost:$connectPort)",
+                LogLevel.INFO
+            )
 
             var activeSocket: Socket = rawSocket
 
             if (effectiveConfig.useTls) {
                 val sni = effectiveConfig.sniHost.ifBlank { effectiveConfig.sshHost }.trim()
-                onLog("Iniciando SSL/TLS (SNI: ${sni.ifBlank { "ninguno" }})...", LogLevel.INFO)
+                onLog(
+                    if (hideServer) "Iniciando SSL/TLS (SNI protegido)..." else "Iniciando SSL/TLS (SNI: ${sni.ifBlank { "ninguno" }})...",
+                    LogLevel.INFO
+                )
                 val sslFactory = createTrustAllSslSocketFactory()
                 val sslSocket = sslFactory.createSocket(
                     rawSocket,
@@ -113,16 +125,13 @@ object PayloadInjector {
                 }
                 sslSocket.soTimeout = CONNECT_TIMEOUT_MS
                 sslSocket.startHandshake()
-                onLog(
-                    "TLS activo: ${sslSocket.session.protocol} (${sslSocket.session.cipherSuite})",
-                    LogLevel.SUCCESS
-                )
+                onLog("TLS activo (${sslSocket.session.protocol})", LogLevel.SUCCESS)
                 activeSocket = sslSocket
             }
 
             val rawPayload = effectiveConfig.payload.trim()
             if (rawPayload.isBlank()) {
-                onLog("Sin payload: conectando SSH directo...", LogLevel.INFO)
+                onLog("Conectando SSH directo...", LogLevel.INFO)
                 activeSocket.soTimeout = 0
                 return activeSocket
             }
@@ -131,12 +140,13 @@ object PayloadInjector {
             val expectedRequests = countHttpRequests(expandedWithSplits)
             val sentHostHeader = extractHostHeader(expandedWithSplits)
 
-            sendPayloadWithSplits(activeSocket.getOutputStream(), expandedWithSplits, onLog)
+            sendPayloadWithSplits(activeSocket.getOutputStream(), expandedWithSplits, hidePayload, onLog)
 
             val wrapped = awaitTunnelReady(
                 socket = activeSocket,
                 expectedRequests = expectedRequests,
                 sentHostHeader = sentHostHeader,
+                hidePayload = hidePayload,
                 onLog = onLog
             )
 
@@ -158,7 +168,6 @@ object PayloadInjector {
         val proxyHost = config.proxyHost.trim()
         val proxyAddr = if (proxyHost.isNotBlank()) "$proxyHost:${config.proxyPort}" else hostPort
 
-        // Normalizar saltos y evitar que un Enter visual después de [crlf] genere un doble salto accidental
         var normalized = template
             .replace("\r\n", "\n")
             .trimEnd('\r', '\n', ' ', '\t')
@@ -201,7 +210,6 @@ object PayloadInjector {
         normalized = replaceCaseInsensitive(normalized, "[auth]", "")
         normalized = replaceWsKeys(normalized)
 
-        // Convertir saltos restantes (cuando se escribe el payload en varias líneas sin [crlf])
         val sb = StringBuilder(normalized.length + 16)
         for (i in normalized.indices) {
             val ch = normalized[i]
@@ -213,7 +221,6 @@ object PayloadInjector {
         }
         var result = sb.toString()
 
-        // Asegurar cierre estándar HTTP (\r\n\r\n) si falta al final
         val withoutSplits = SPLIT_PATTERN.matcher(result).replaceAll("")
         if (withoutSplits.isNotBlank() && !result.endsWith("\r\n\r\n")) {
             result += if (result.endsWith("\r\n")) "\r\n" else "\r\n\r\n"
@@ -224,6 +231,7 @@ object PayloadInjector {
     private fun sendPayloadWithSplits(
         out: OutputStream,
         expanded: String,
+        hidePayload: Boolean,
         onLog: (String, LogLevel) -> Unit
     ) {
         val matcher = SPLIT_PATTERN.matcher(expanded)
@@ -256,17 +264,22 @@ object PayloadInjector {
             out.flush()
         }
 
-        val cleanPreview = SPLIT_PATTERN.matcher(expanded).replaceAll("")
-        val firstLine = cleanPreview.lineSequence().firstOrNull()?.take(90) ?: "Payload enviado"
-        val sentHost = extractHostHeader(expanded)
-        val hostInfo = if (sentHost.isNotBlank()) " (Host: $sentHost)" else ""
-        onLog("Payload enviado: $firstLine$hostInfo", LogLevel.INFO)
+        if (hidePayload) {
+            onLog("Payload protegido enviado", LogLevel.INFO)
+        } else {
+            val cleanPreview = SPLIT_PATTERN.matcher(expanded).replaceAll("")
+            val firstLine = cleanPreview.lineSequence().firstOrNull()?.take(90) ?: "Payload enviado"
+            val sentHost = extractHostHeader(expanded)
+            val hostInfo = if (sentHost.isNotBlank()) " (Host: $sentHost)" else ""
+            onLog("Payload enviado: $firstLine$hostInfo", LogLevel.INFO)
+        }
     }
 
     private fun awaitTunnelReady(
         socket: Socket,
         expectedRequests: Int,
         sentHostHeader: String,
+        hidePayload: Boolean,
         onLog: (String, LogLevel) -> Unit
     ): Socket {
         val rawIn = socket.getInputStream()
@@ -279,7 +292,7 @@ object PayloadInjector {
                 rawIn.read(peek)
             } catch (_: SocketTimeoutException) {
                 if (responsesRead == 0) {
-                    onLog("Sin respuesta HTTP previa; iniciando negociación SSH...", LogLevel.INFO)
+                    onLog("Iniciando negociación SSH...", LogLevel.INFO)
                     return socket
                 }
                 throw IOException("Tiempo de espera agotado tras respuesta HTTP #$responsesRead")
@@ -300,7 +313,6 @@ object PayloadInjector {
                 return wrapWithPrefix(socket, peek.copyOf(peekLen), rawIn)
             }
 
-            // Leer la primera línea completa + cabeceras HTTP exactas hasta \r\n\r\n sin leer de más
             val firstLineRest = readLineCrlf(rawIn) ?: throw IOException("Cabecera HTTP incompleta")
             val statusLine = (prefix + firstLineRest).trim()
             val statusCode = statusLine.split(Regex("\\s+")).getOrNull(1)?.toIntOrNull() ?: 0
@@ -337,7 +349,6 @@ object PayloadInjector {
                 return socket
             }
 
-            // Códigos distintos a 101/200 (por ejemplo 530 <none>, 302, 400, 403)
             onLog("Respuesta HTTP #$responsesRead: $statusLine", LogLevel.WARN)
 
             if (contentLength > 0 || isChunked) {
@@ -345,11 +356,10 @@ object PayloadInjector {
             }
 
             if (!connectionClose && responsesRead < expectedRequests) {
-                onLog("Drenada respuesta previa; esperando respuesta #${responsesRead + 1}...", LogLevel.INFO)
+                onLog("Esperando respuesta #${responsesRead + 1}...", LogLevel.INFO)
                 continue
             }
 
-            // En algunos proxies/CDN tras un 302/400/530 sin Connection: close puede llegar SSH directo o 101
             if (!connectionClose) {
                 val prevTimeout = socket.soTimeout
                 socket.soTimeout = 600
@@ -363,8 +373,9 @@ object PayloadInjector {
                             return wrapWithPrefix(socket, probe.copyOf(n), rawIn)
                         }
                         if (nextPrefix.startsWith("HTTP/", ignoreCase = true)) {
-                            // Reinyectar los 5 bytes y seguir el bucle
-                            return awaitRemainingAfterPrefix(socket, probe.copyOf(n), rawIn, expectedRequests, sentHostHeader, onLog, responsesRead)
+                            return awaitRemainingAfterPrefix(
+                                socket, probe.copyOf(n), rawIn, expectedRequests, sentHostHeader, hidePayload, onLog, responsesRead
+                            )
                         }
                     }
                 } catch (_: SocketTimeoutException) {
@@ -376,12 +387,9 @@ object PayloadInjector {
                 }
             }
 
-            if (statusCode == 530) {
+            if (statusCode == 530 && !hidePayload) {
                 val hostHint = if (sentHostHeader.isNotBlank()) " (Host enviado: '$sentHostHeader')" else ""
-                throw IOException(
-                    "Cloudflare/CDN rechazó el payload con '$statusLine'$hostHint. " +
-                        "Asegúrate de que en 'Host:' vaya tu dominio real del servidor WS (no una IP ni un dominio sin túnel)."
-                )
+                throw IOException("El servidor rechazó el payload con '$statusLine'$hostHint")
             }
             throw IOException("El servidor/proxy rechazó el payload: $statusLine")
         }
@@ -395,12 +403,13 @@ object PayloadInjector {
         rawIn: InputStream,
         expectedRequests: Int,
         sentHostHeader: String,
+        hidePayload: Boolean,
         onLog: (String, LogLevel) -> Unit,
         alreadyRead: Int
     ): Socket {
         val combined = SequenceInputStream(ByteArrayInputStream(initialPrefix), rawIn)
         val wrapped = wrapWithStream(socket, combined)
-        return awaitTunnelReady(wrapped, (expectedRequests - alreadyRead).coerceAtLeast(1), sentHostHeader, onLog)
+        return awaitTunnelReady(wrapped, (expectedRequests - alreadyRead).coerceAtLeast(1), sentHostHeader, hidePayload, onLog)
     }
 
     private fun readLineCrlf(input: InputStream): String? {
@@ -461,7 +470,14 @@ object PayloadInjector {
         val clean = SPLIT_PATTERN.matcher(expandedWithSplits).replaceAll("")
         val blocks = clean.split("\r\n\r\n")
             .map { it.trim() }
-            .filter { it.isNotEmpty() && (it.contains("HTTP/", ignoreCase = true) || it.startsWith("GET ") || it.startsWith("POST ") || it.startsWith("HEAD ") || it.startsWith("CONNECT ") || it.startsWith("PUT ") || it.startsWith("PATCH ")) }
+            .filter {
+                it.isNotEmpty() && (
+                    it.contains("HTTP/", ignoreCase = true) ||
+                        it.startsWith("GET ") || it.startsWith("POST ") ||
+                        it.startsWith("HEAD ") || it.startsWith("CONNECT ") ||
+                        it.startsWith("PUT ") || it.startsWith("PATCH ")
+                    )
+            }
         return blocks.size.coerceAtLeast(1)
     }
 
