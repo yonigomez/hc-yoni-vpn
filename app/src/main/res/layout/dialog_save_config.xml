@@ -73,10 +73,19 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:layout_marginBottom="4dp"
-            android:text="SEGURIDAD DEL ARCHIVO"
+            android:text="SEGURIDAD Y PERMISOS"
             android:textColor="@color/accent_cyan"
             android:textSize="11sp"
             android:textStyle="bold" />
+
+        <CheckBox
+            android:id="@+id/cbAllowWifiShare"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="Permitir pasar Wi-Fi (Hotspot) a otros dispositivos"
+            android:textColor="@color/accent_green"
+            android:textSize="13sp" />
 
         <CheckBox
             android:id="@+id/cbMobileDataOnly"
@@ -182,7 +191,7 @@
             android:id="@+id/cbShowNote"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Agregar Nota / Banner visible en pantalla"
+            android:text="Agregar Nota / Banner HTML visible en pantalla"
             android:textColor="@color/text_primary"
             android:textSize="13sp" />
 
@@ -192,7 +201,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="6dp"
-            android:hint="Texto del aviso o banner"
+            android:hint="Texto o código HTML del banner"
             android:visibility="gone"
             app:boxBackgroundColor="@color/bg_input">
 
@@ -202,7 +211,7 @@
                 android:layout_height="wrap_content"
                 android:gravity="top|start"
                 android:inputType="textMultiLine"
-                android:maxLines="5"
+                android:maxLines="6"
                 android:minLines="2"
                 android:textColor="@color/text_primary" />
         </com.google.android.material.textfield.TextInputLayout>
