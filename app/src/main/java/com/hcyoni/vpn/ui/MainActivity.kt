@@ -18,6 +18,7 @@ import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -37,6 +38,7 @@ import com.hcyoni.vpn.R
 import com.hcyoni.vpn.data.ConfigStore
 import com.hcyoni.vpn.data.VpnStateBus
 import com.hcyoni.vpn.databinding.ActivityMainBinding
+import com.hcyoni.vpn.databinding.PageBannerBinding
 import com.hcyoni.vpn.databinding.PageConnectionBinding
 import com.hcyoni.vpn.databinding.PageLogsBinding
 import com.hcyoni.vpn.databinding.PagePayloadBinding
@@ -53,16 +55,26 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
+    private data class TabPageItem(
+        val id: Long,
+        val title: String,
+        val view: View
+    )
+
     private lateinit var binding: ActivityMainBinding
+    private lateinit var bannerBinding: PageBannerBinding
     private lateinit var connBinding: PageConnectionBinding
     private lateinit var payloadBinding: PagePayloadBinding
     private lateinit var logsBinding: PageLogsBinding
 
     private var activeConfig: VpnConfig = VpnConfig()
     private var myHwid: String = ""
-    private var bannerHidden = false
     private var lastBannerTitle = ""
     private var lastBannerContent = ""
+
+    private var tabPages: List<TabPageItem> = emptyList()
+    private var pagerAdapter: RecyclerView.Adapter<RecyclerView.ViewHolder>? = null
+    private var showingBannerTab = false
 
     private var pendingExportConfig: VpnConfig? = null
     private var pendingExportPassword: String = ""
@@ -120,13 +132,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
+        bannerBinding = PageBannerBinding.inflate(layoutInflater)
         connBinding = PageConnectionBinding.inflate(layoutInflater)
         payloadBinding = PagePayloadBinding.inflate(layoutInflater)
         logsBinding = PageLogsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
-        SaveAndDialogsHelper.configureBannerWebView(binding.webBannerPreview, this)
+        SaveAndDialogsHelper.configureBannerWebView(bannerBinding.webBannerPage, this)
+        binding.ivDrawerLogo.clipToOutline = true
 
         applyInsets()
         initSwipePages()
@@ -145,7 +159,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        binding.webBannerPreview.stopLoading()
+        bannerBinding.webBannerPage.stopLoading()
         super.onDestroy()
     }
 
@@ -162,30 +176,60 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun buildTabList(includeBanner: Boolean): List<TabPageItem> {
+        val list = mutableListOf<TabPageItem>()
+        if (includeBanner) {
+            list.add(TabPageItem(ID_BANNER, "Banner", bannerBinding.root))
+        }
+        list.add(TabPageItem(ID_CONN, "Conexión", connBinding.root))
+        list.add(TabPageItem(ID_PAYLOAD, "Payload", payloadBinding.root))
+        list.add(TabPageItem(ID_LOGS, "Registro", logsBinding.root))
+        return list
+    }
+
     private fun initSwipePages() {
-        val pages = listOf(connBinding.root, payloadBinding.root, logsBinding.root)
-        binding.viewPager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-            override fun getItemCount(): Int = pages.size
-            override fun getItemViewType(position: Int): Int = position
-            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-                val page = pages[viewType]
-                (page.parent as? ViewGroup)?.removeView(page)
-                page.layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                return object : RecyclerView.ViewHolder(page) {}
+        showingBannerTab = false
+        tabPages = buildTabList(includeBanner = false)
+
+        val adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            init {
+                setHasStableIds(true)
             }
 
-            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {}
-        }
-        binding.viewPager.offscreenPageLimit = 2
-        TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, pos ->
-            tab.text = when (pos) {
-                0 -> "Conexión"
-                1 -> "Payload"
-                else -> "Registro"
+            override fun getItemCount(): Int = tabPages.size
+            override fun getItemId(position: Int): Long = tabPages[position].id
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val container = FrameLayout(parent.context).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+                return object : RecyclerView.ViewHolder(container) {}
             }
+
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                val container = holder.itemView as FrameLayout
+                val page = tabPages[position].view
+                if (page.parent === container) return
+                (page.parent as? ViewGroup)?.removeView(page)
+                container.removeAllViews()
+                container.addView(
+                    page,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+            }
+        }
+
+        pagerAdapter = adapter
+        binding.viewPager.adapter = adapter
+        binding.viewPager.offscreenPageLimit = 3
+        TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, pos ->
+            tab.text = tabPages.getOrNull(pos)?.title.orEmpty()
         }.attach()
     }
 
@@ -350,18 +394,10 @@ class MainActivity : AppCompatActivity() {
             askClearConfig()
         }
 
-        binding.btnExpandBanner.setOnClickListener {
+        bannerBinding.btnExpandBannerPage.setOnClickListener {
             if (lastBannerContent.isNotBlank()) {
                 SaveAndDialogsHelper.showFullBannerDialog(this, lastBannerTitle, lastBannerContent)
             }
-        }
-        binding.btnHideBanner.setOnClickListener {
-            bannerHidden = true
-            updateBannerDisplay(VpnStateBus.serverBanner.value)
-        }
-        binding.btnShowBannerPill.setOnClickListener {
-            bannerHidden = false
-            updateBannerDisplay(VpnStateBus.serverBanner.value)
         }
 
         connBinding.switchUseTls.setOnCheckedChangeListener { _, checked ->
@@ -405,7 +441,6 @@ class MainActivity : AppCompatActivity() {
     private fun processImportedRaw(raw: String, pass: String) {
         try {
             val imported = SecurityAndDeviceHelper.decryptYoniConfig(raw, pass)
-            bannerHidden = false
             VpnStateBus.setServerBanner(null)
             ConfigStore.saveConfig(this, imported)
             applyConfigToUi(imported)
@@ -424,7 +459,6 @@ class MainActivity : AppCompatActivity() {
                 if (VpnStateBus.state.value != VpnState.DISCONNECTED) {
                     startService(Intent(this, HcYoniVpnService::class.java).apply { action = HcYoniVpnService.ACTION_DISCONNECT })
                 }
-                bannerHidden = false
                 VpnStateBus.setServerBanner(null)
                 val blank = VpnConfig()
                 ConfigStore.saveConfig(this, blank)
@@ -435,16 +469,21 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun switchToConnectionTab() {
+        val idx = tabPages.indexOfFirst { it.id == ID_CONN }.coerceAtLeast(0)
+        binding.viewPager.setCurrentItem(idx, true)
+    }
+
     private fun startConnectionFlow() {
         val cfg = collectConfigFromUi()
         if (cfg.sshHost.isBlank()) {
             showMsg("Ingresa el Host o IP del servidor SSH")
-            binding.viewPager.setCurrentItem(0, true)
+            switchToConnectionTab()
             return
         }
         if (cfg.username.isBlank() && !cfg.useHwidWhenEmpty) {
             showMsg("Ingresa el Usuario SSH o activa autologin por HWID en Ajustes")
-            binding.viewPager.setCurrentItem(0, true)
+            switchToConnectionTab()
             return
         }
         ConfigStore.saveConfig(this, cfg)
@@ -535,7 +574,7 @@ class MainActivity : AppCompatActivity() {
         payloadBinding.chipPresetSslWs.isEnabled = payEditable
         payloadBinding.chipPresetProxyConnect.isEnabled = payEditable
 
-        updateBannerDisplay(VpnStateBus.serverBanner.value)
+        updateBannerDisplay(VpnStateBus.serverBanner.value, focusBannerIfNew = true)
     }
 
     private fun collectConfigFromUi(): VpnConfig {
@@ -583,51 +622,52 @@ class MainActivity : AppCompatActivity() {
                 launch { VpnStateBus.logs.collect { drawLogs(it) } }
                 launch {
                     VpnStateBus.serverBanner.collect { banner ->
-                        if (!banner.isNullOrBlank()) bannerHidden = false
-                        updateBannerDisplay(banner)
+                        updateBannerDisplay(banner, focusBannerIfNew = !banner.isNullOrBlank())
                     }
                 }
             }
         }
     }
 
-    private fun updateBannerDisplay(vpsBanner: String?) {
+    private fun updateBannerDisplay(vpsBanner: String?, focusBannerIfNew: Boolean) {
         val note = activeConfig.configNote.trim()
         val vps = if (activeConfig.hideServerBanner) "" else vpsBanner?.trim().orEmpty()
 
         val (title, body) = when {
-            note.isNotEmpty() && vps.isNotEmpty() -> "📢 AVISO DEL ARCHIVO Y VPS" to "$note<hr>$vps"
+            note.isNotEmpty() && vps.isNotEmpty() -> "📢 AVISO DEL ARCHIVO Y SERVIDOR VPS" to "$note<hr>$vps"
             note.isNotEmpty() -> "📢 AVISO DEL ARCHIVO" to note
-            vps.isNotEmpty() -> "🖥️ BANNER DE LA VPS" to vps
+            vps.isNotEmpty() -> "🖥️ BANNER DEL SERVIDOR VPS" to vps
             else -> "" to ""
         }
 
-        if (body.isEmpty()) {
-            lastBannerTitle = ""
-            lastBannerContent = ""
-            binding.cardBanner.visibility = View.GONE
-            binding.btnShowBannerPill.visibility = View.GONE
-            return
-        }
-
+        val hasBanner = body.isNotEmpty()
+        val contentChanged = body != lastBannerContent && hasBanner
         lastBannerTitle = title
         lastBannerContent = body
 
-        if (bannerHidden) {
-            binding.cardBanner.visibility = View.GONE
-            binding.btnShowBannerPill.visibility = View.VISIBLE
-            return
+        if (hasBanner) {
+            bannerBinding.tvBannerPageTitle.text = title
+            SaveAndDialogsHelper.renderHtmlIntoWebView(bannerBinding.webBannerPage, body)
         }
 
-        binding.btnShowBannerPill.visibility = View.GONE
-        binding.tvBannerTitle.text = title
-        SaveAndDialogsHelper.renderHtmlIntoWebView(binding.webBannerPreview, body)
-        binding.cardBanner.visibility = View.VISIBLE
+        if (hasBanner != showingBannerTab) {
+            showingBannerTab = hasBanner
+            tabPages = buildTabList(includeBanner = hasBanner)
+            pagerAdapter?.notifyDataSetChanged()
+            if (hasBanner && focusBannerIfNew) {
+                binding.viewPager.post { binding.viewPager.setCurrentItem(0, true) }
+            } else if (!hasBanner) {
+                binding.viewPager.post { binding.viewPager.setCurrentItem(0, false) }
+            }
+        } else if (hasBanner && contentChanged && focusBannerIfNew) {
+            binding.viewPager.post { binding.viewPager.setCurrentItem(0, true) }
+        }
     }
 
     private fun drawState(state: VpnState, message: String) {
         binding.tvConnectionSubtitle.text = message
         val cyan = ContextCompat.getColor(this, R.color.accent_cyan)
+        val blue = ContextCompat.getColor(this, R.color.accent_blue)
         val green = ContextCompat.getColor(this, R.color.accent_green)
         val amber = ContextCompat.getColor(this, R.color.accent_amber)
         val red = ContextCompat.getColor(this, R.color.accent_red)
@@ -652,7 +692,7 @@ class MainActivity : AppCompatActivity() {
                 binding.badgeStatus.text = "RECONECTANDO"
                 binding.badgeStatus.setTextColor(amber)
                 binding.btnConnectToggle.text = getString(R.string.btn_disconnect)
-                binding.btnConnectToggle.backgroundTintList = ColorStateList.valueOf(amber)
+                binding.btnConnectToggle.backgroundTintList = ColorStateList.valueOf(blue)
             }
             VpnState.CONNECTED -> {
                 binding.badgeStatus.text = getString(R.string.status_connected)
@@ -738,5 +778,12 @@ class MainActivity : AppCompatActivity() {
         bytes < 1024L * 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
         bytes < 1024L * 1024L * 1024L -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
         else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+
+    companion object {
+        private const val ID_BANNER = 1L
+        private const val ID_CONN = 2L
+        private const val ID_PAYLOAD = 3L
+        private const val ID_LOGS = 4L
     }
 }
