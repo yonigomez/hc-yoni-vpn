@@ -10,8 +10,8 @@ android {
         applicationId = "com.hcyoni.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "4.0.0"
+        versionCode = 5
+        versionName = "5.0.0"
     }
 
     buildFeatures {
@@ -40,7 +40,7 @@ android {
             excludes += "/META-INF/INDEX.LIST"
         }
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
     }
 }
