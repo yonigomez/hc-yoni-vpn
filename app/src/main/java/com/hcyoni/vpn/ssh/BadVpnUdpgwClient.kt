@@ -9,7 +9,6 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.SocketAddress
@@ -34,6 +33,7 @@ class BadVpnUdpgwClient(
 
     private data class FlowEntry(
         val conid: Int,
+        val atyp: Int,
         val udpSocket: DatagramSocket,
         val clientAddr: SocketAddress,
         val socksAddrHeader: ByteArray
@@ -55,11 +55,21 @@ class BadVpnUdpgwClient(
     private var outputStream: OutputStream? = null
 
     private val loggedConnected = AtomicBoolean(false)
+    private val loggedFirstReply = AtomicBoolean(false)
     private val lastFailureMs = AtomicLong(0L)
+
+    fun prewarmAsync() {
+        workerExecutor.execute {
+            if (!closed) {
+                ensureConnected(silentIfFail = true)
+            }
+        }
+    }
 
     fun sendUdpPacket(
         udpSocket: DatagramSocket,
         clientAddr: SocketAddress,
+        atyp: Int,
         dstAddress: InetAddress,
         dstPort: Int,
         socksAddrHeader: ByteArray,
@@ -69,9 +79,9 @@ class BadVpnUdpgwClient(
 
         val ipKey = dstAddress.hostAddress ?: return
         val key = FlowKey(clientAddr, ipKey, dstPort)
-        val conid = conidByKey[key] ?: allocateFlow(key, udpSocket, clientAddr, socksAddrHeader)
+        val conid = conidByKey[key] ?: allocateFlow(key, atyp, udpSocket, clientAddr, socksAddrHeader)
 
-        if (!ensureConnected()) return
+        if (!ensureConnected(silentIfFail = false)) return
 
         val isIpv6 = dstAddress is Inet6Address
         val addrBytes = dstAddress.address
@@ -80,19 +90,15 @@ class BadVpnUdpgwClient(
         if (innerLen > 32_760) return
 
         val frame = ByteArray(2 + innerLen)
-        // PacketProto: 2 bytes de longitud (Little Endian)
         frame[0] = (innerLen and 0xFF).toByte()
         frame[1] = ((innerLen ushr 8) and 0xFF).toByte()
-        // udpgw_header: flags (1 byte) + conid (2 bytes Little Endian)
         frame[2] = (if (isIpv6) FLAG_IPV6 else 0).toByte()
         frame[3] = (conid and 0xFF).toByte()
         frame[4] = ((conid ushr 8) and 0xFF).toByte()
-        // udpgw_addr: IP (network order) + Puerto (Big Endian)
         System.arraycopy(addrBytes, 0, frame, 5, addrBytes.size)
         val portOffset = 5 + addrBytes.size
         frame[portOffset] = ((dstPort ushr 8) and 0xFF).toByte()
         frame[portOffset + 1] = (dstPort and 0xFF).toByte()
-        // Carga útil UDP
         System.arraycopy(payload, 0, frame, portOffset + 2, payload.size)
 
         try {
@@ -133,38 +139,36 @@ class BadVpnUdpgwClient(
 
     private fun allocateFlow(
         key: FlowKey,
+        atyp: Int,
         udpSocket: DatagramSocket,
         clientAddr: SocketAddress,
         socksAddrHeader: ByteArray
     ): Int {
         synchronized(flowsByConId) {
             conidByKey[key]?.let { return it }
-            var candidate = 1
             repeat(65_000) {
                 val id = (Math.floorMod(nextConId.getAndIncrement(), 65_534)) + 1
                 if (!flowsByConId.containsKey(id)) {
-                    candidate = id
-                    val entry = FlowEntry(candidate, udpSocket, clientAddr, socksAddrHeader)
-                    flowsByConId[candidate] = entry
-                    conidByKey[key] = candidate
-                    return candidate
+                    flowsByConId[id] = FlowEntry(id, atyp, udpSocket, clientAddr, socksAddrHeader)
+                    conidByKey[key] = id
+                    return id
                 }
             }
-            candidate = (Math.floorMod(nextConId.getAndIncrement(), 65_534)) + 1
-            flowsByConId[candidate] = FlowEntry(candidate, udpSocket, clientAddr, socksAddrHeader)
-            conidByKey[key] = candidate
-            return candidate
+            val fallback = (Math.floorMod(nextConId.getAndIncrement(), 65_534)) + 1
+            flowsByConId[fallback] = FlowEntry(fallback, atyp, udpSocket, clientAddr, socksAddrHeader)
+            conidByKey[key] = fallback
+            return fallback
         }
     }
 
-    private fun ensureConnected(): Boolean {
+    private fun ensureConnected(silentIfFail: Boolean): Boolean {
         val current = channel
         if (current != null && current.isConnected && !current.isClosed && outputStream != null) {
             return true
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastFailureMs.get() < 10_000L) {
+        if (now - lastFailureMs.get() < 8_000L) {
             return false
         }
 
@@ -194,14 +198,14 @@ class BadVpnUdpgwClient(
                 outputStream = chOut
 
                 if (loggedConnected.compareAndSet(false, true)) {
-                    onLog("Juegos/UDP activo mediante BadVPN UDPGW (puerto $udpgwPort)", LogLevel.SUCCESS)
+                    onLog("Motor Juegos / UDP listo (BadVPN UDPGW puerto $udpgwPort)", LogLevel.SUCCESS)
                 }
 
                 startReaderAndKeepalive(ch, chIn)
                 return true
             } catch (e: Exception) {
                 val prev = lastFailureMs.getAndSet(System.currentTimeMillis())
-                if (prev == 0L) {
+                if (!silentIfFail && prev == 0L) {
                     onLog(
                         "UDPGW puerto $udpgwPort no disponible en esta VPS (${e.message ?: "cerrado"})",
                         LogLevel.WARN
@@ -237,7 +241,8 @@ class BadVpnUdpgwClient(
                     if ((flags and FLAG_KEEPALIVE) != 0) continue
 
                     val conid = (frame[1].toInt() and 0xFF) or ((frame[2].toInt() and 0xFF) shl 8)
-                    val addrSize = if ((flags and FLAG_IPV6) != 0) 18 else 6
+                    val isReplyIpv6 = (flags and FLAG_IPV6) != 0
+                    val addrSize = if (isReplyIpv6) 18 else 6
                     val payloadOffset = 3 + addrSize
                     if (frameLen <= payloadOffset) continue
 
@@ -250,12 +255,27 @@ class BadVpnUdpgwClient(
                     val udpPayloadSize = frameLen - payloadOffset
                     onBytesRx(udpPayloadSize.toLong())
 
-                    val outPacket = ByteArray(3 + entry.socksAddrHeader.size + udpPayloadSize)
+                    // Si el cliente usó IPv4 directa, reenviamos la IP/puerto reales de respuesta (Fullcone NAT)
+                    val headerBytes = if (entry.atyp == 0x01 && !isReplyIpv6) {
+                        byteArrayOf(
+                            0x01,
+                            frame[3], frame[4], frame[5], frame[6],
+                            frame[7], frame[8]
+                        )
+                    } else {
+                        entry.socksAddrHeader
+                    }
+
+                    val outPacket = ByteArray(3 + headerBytes.size + udpPayloadSize)
                     outPacket[0] = 0
                     outPacket[1] = 0
                     outPacket[2] = 0
-                    System.arraycopy(entry.socksAddrHeader, 0, outPacket, 3, entry.socksAddrHeader.size)
-                    System.arraycopy(frame, payloadOffset, outPacket, 3 + entry.socksAddrHeader.size, udpPayloadSize)
+                    System.arraycopy(headerBytes, 0, outPacket, 3, headerBytes.size)
+                    System.arraycopy(frame, payloadOffset, outPacket, 3 + headerBytes.size, udpPayloadSize)
+
+                    if (loggedFirstReply.compareAndSet(false, true)) {
+                        onLog("Paquetes UDP de juegos recibiéndose correctamente", LogLevel.SUCCESS)
+                    }
 
                     try {
                         entry.udpSocket.send(
@@ -274,12 +294,11 @@ class BadVpnUdpgwClient(
             }
         }
 
-        // KeepAlive UDPGW cada 20s para que el servidor no cierre la sesión UDP por inactividad
         workerExecutor.execute {
             val keepAliveFrame = byteArrayOf(0x03, 0x00, FLAG_KEEPALIVE.toByte(), 0x00, 0x00)
             try {
                 while (!closed && activeChannel.isConnected && !activeChannel.isClosed) {
-                    Thread.sleep(20_000)
+                    Thread.sleep(15_000)
                     if (closed || channel != activeChannel) break
                     synchronized(writeLock) {
                         outputStream?.write(keepAliveFrame)
