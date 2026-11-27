@@ -64,6 +64,10 @@ class HcYoniVpnService : VpnService() {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             underlyingNetwork = network
+            try {
+                setUnderlyingNetworks(arrayOf(network))
+            } catch (_: Exception) {
+            }
         }
 
         override fun onLost(network: Network) {
@@ -189,12 +193,12 @@ class HcYoniVpnService : VpnService() {
         socksServer = socks
         VpnStateBus.log("SOCKS5", "Proxy local activo en 127.0.0.1:$socksPort", LogLevel.INFO)
 
-        // 3. Crear interfaz TUN de Android
+        // 3. Crear interfaz TUN de Android (con DNS mapeado interno 198.18.0.2)
         val tun = establishTunInterface(config)
         tunInterface = tun
 
-        // 4. Iniciar motor nativo hev-socks5-tunnel (16KB page aligned)
-        val yamlFile = writeHevConfigFile(socksPort)
+        // 4. Iniciar motor nativo hev-socks5-tunnel con mapdns
+        val yamlFile = writeHevConfigFile(socksPort, config.enableIpv6)
         val started = TProxyService.TProxyStartService(yamlFile.absolutePath, tun.fd)
         if (!started) {
             throw IllegalStateException("No se pudo iniciar el núcleo nativo hev-socks5-tunnel")
@@ -205,7 +209,7 @@ class HcYoniVpnService : VpnService() {
             VpnState.CONNECTED,
             "Conectado • ${config.sshHost}:${config.sshPort}"
         )
-        VpnStateBus.log("VPN", "Túnel TUN activo — Todo el tráfico protegido", LogLevel.SUCCESS)
+        VpnStateBus.log("VPN", "Túnel TUN + DNS remoto activo — Ya puedes navegar", LogLevel.SUCCESS)
         updateNotification("Conectado • ${config.sshHost}")
 
         startStatsLoop(socks, connectedAt)
@@ -225,15 +229,22 @@ class HcYoniVpnService : VpnService() {
             .setMtu(1500)
             .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
-            .addAddress("fc00::1", 128)
-            .addRoute("::", 0)
-            .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
+            .addDnsServer("198.18.0.2")
 
-        if (config.secondaryDns.isNotBlank()) {
-            builder.addDnsServer(config.secondaryDns)
+        if (config.enableIpv6) {
+            builder.addAddress("fc00::1", 128)
+            builder.addRoute("::", 0)
         }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
+        }
+
+        underlyingNetwork?.let { net ->
+            try {
+                builder.setUnderlyingNetworks(arrayOf(net))
+            } catch (_: Exception) {
+            }
         }
 
         try {
@@ -254,19 +265,26 @@ class HcYoniVpnService : VpnService() {
             ?: throw IllegalStateException("Android denegó la creación de la interfaz TUN")
     }
 
-    private fun writeHevConfigFile(socksPort: Int): File {
+    private fun writeHevConfigFile(socksPort: Int, enableIpv6: Boolean): File {
+        val ipv6Line = if (enableIpv6) "\n              ipv6: 'fc00::1'" else ""
         val yaml = """
             tunnel:
               mtu: 1500
-              ipv4: 198.18.0.1
-              ipv6: 'fc00::1'
+              ipv4: 198.18.0.1$ipv6Line
             socks5:
               port: $socksPort
               address: 127.0.0.1
               udp: 'udp'
+            mapdns:
+              address: 198.18.0.2
+              port: 53
+              network: 100.64.0.0
+              netmask: 255.192.0.0
+              cache-size: 10000
             misc:
-              task-stack-size: 81920
-              connect-timeout: 10000
+              task-stack-size: 86016
+              tcp-buffer-size: 65536
+              connect-timeout: 15000
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
               log-level: error
@@ -349,9 +367,15 @@ class HcYoniVpnService : VpnService() {
     private fun registerNetworkTracking() {
         if (networkCallbackRegistered) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        underlyingNetwork = cm.activeNetwork
+        underlyingNetwork = cm.allNetworks.firstOrNull { net ->
+            val caps = cm.getNetworkCapabilities(net)
+            caps != null &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
         try {
             cm.registerNetworkCallback(request, networkCallback)
