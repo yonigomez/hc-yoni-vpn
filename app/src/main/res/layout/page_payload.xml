@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="14dp">
+
+        <TextView
+            android:id="@+id/tvPayloadLockedBanner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_banner_card"
+            android:padding="10dp"
+            android:text="🔒 Payload encriptado y protegido por el creador."
+            android:textColor="@color/accent_amber"
+            android:textSize="12.5sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:text="PLANTILLAS RÁPIDAS"
+            android:textColor="@color/accent_cyan"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipGroupPresets"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipPresetWs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="WS Directo"
+                android:textColor="@color/text_primary"
+                app:chipBackgroundColor="@color/bg_card"
+                app:chipStrokeColor="@color/stroke_subtle"
+                app:chipStrokeWidth="1dp" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipPresetDirectSplit"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Directo + Split"
+                android:textColor="@color/text_primary"
+                app:chipBackgroundColor="@color/bg_card"
+                app:chipStrokeColor="@color/stroke_subtle"
+                app:chipStrokeWidth="1dp" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipPresetSslWs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SSL + WS"
+                android:textColor="@color/text_primary"
+                app:chipBackgroundColor="@color/bg_card"
+                app:chipStrokeColor="@color/stroke_subtle"
+                app:chipStrokeWidth="1dp" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipPresetProxyConnect"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Proxy CONNECT"
+                android:textColor="@color/text_primary"
+                app:chipBackgroundColor="@color/bg_card"
+                app:chipStrokeColor="@color/stroke_subtle"
+                app:chipStrokeWidth="1dp" />
+        </com.google.android.material.chip.ChipGroup>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:text="INSERTAR ETIQUETA EN EL CURSOR"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:scrollbars="none">
+
+            <com.google.android.material.chip.ChipGroup
+                android:id="@+id/chipGroupTags"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                app:singleLine="true" />
+        </HorizontalScrollView>
+
+        <com.google.android.material.textfield.TextInputLayout
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Payload HTTP (vacío = SSH puro sin payload)"
+            app:boxBackgroundColor="@color/bg_input"
+            app:boxCornerRadiusBottomEnd="14dp"
+            app:boxCornerRadiusBottomStart="14dp"
+            app:boxCornerRadiusTopEnd="14dp"
+            app:boxCornerRadiusTopStart="14dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etPayload"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:gravity="top|start"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:maxLines="16"
+                android:minLines="8"
+                android:textColor="@color/accent_green"
+                android:textSize="12.5sp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnClearPayload"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Limpiar"
+                android:textColor="@color/accent_amber"
+                app:strokeColor="@color/stroke_subtle" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSaveConfig"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1.3"
+                android:text="Guardar Config"
+                android:textColor="@color/bg_primary"
+                android:textStyle="bold"
+                app:backgroundTint="@color/accent_cyan" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
