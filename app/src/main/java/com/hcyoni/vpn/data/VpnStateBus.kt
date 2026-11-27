@@ -27,6 +27,9 @@ object VpnStateBus {
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs.asStateFlow()
 
+    private val _serverBanner = MutableStateFlow<String?>(null)
+    val serverBanner: StateFlow<String?> = _serverBanner.asStateFlow()
+
     fun updateState(newState: VpnState, message: String) {
         _state.value = newState
         _statusMessage.value = message
@@ -38,6 +41,10 @@ object VpnStateBus {
 
     fun resetStats() {
         _stats.value = TrafficStats()
+    }
+
+    fun setServerBanner(banner: String?) {
+        _serverBanner.value = banner?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     @Synchronized
