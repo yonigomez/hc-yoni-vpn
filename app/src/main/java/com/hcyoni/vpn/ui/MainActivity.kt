@@ -121,6 +121,7 @@ class MainActivity : AppCompatActivity() {
         setupTabs()
         setupPayloadTools()
         setupClickListeners()
+        setupHttpCustomAutoSplit()
 
         val saved = ConfigStore.loadConfig(this)
         applyConfigToUi(saved)
@@ -149,10 +150,58 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    private fun setupHttpCustomAutoSplit() {
+        // Si pegas formato "host:puerto@usuario:clave" en Host / IP SSH, lo separa solo
+        binding.etSshHost.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val raw = s?.toString()?.trim().orEmpty()
+                if (!raw.contains("@")) return
+                val atIdx = raw.indexOf('@')
+                val left = raw.substring(0, atIdx).trim()
+                val right = raw.substring(atIdx + 1).trim()
+                if (left.isBlank()) return
+
+                val hostParts = left.split(":")
+                val parsedHost = hostParts[0].trim()
+                val parsedPort = hostParts.getOrNull(1)?.trim()?.toIntOrNull()
+
+                val credParts = right.split(":", limit = 2)
+                val parsedUser = credParts.getOrNull(0)?.trim().orEmpty()
+                val parsedPass = credParts.getOrNull(1)?.trim().orEmpty()
+
+                if (parsedHost.isNotBlank()) {
+                    binding.etSshHost.removeTextChangedListener(this)
+                    binding.etSshHost.setText(parsedHost)
+                    binding.etSshHost.setSelection(parsedHost.length)
+                    binding.etSshHost.addTextChangedListener(this)
+
+                    if (parsedPort != null && parsedPort in 1..65535) {
+                        binding.etSshPort.setText(parsedPort.toString())
+                    }
+                    if (parsedUser.isNotBlank()) {
+                        binding.etUsername.setText(parsedUser)
+                    }
+                    if (parsedPass.isNotBlank()) {
+                        binding.etPassword.setText(parsedPass)
+                    }
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Cuenta SSH separada automáticamente",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        })
+    }
+
     private fun setupPayloadTools() {
         val tags = listOf(
             "[crlf]",
+            "[crlf*2]",
             "[host]",
+            "[ssh_host]",
             "[host_port]",
             "[sni]",
             "[port]",
@@ -160,6 +209,8 @@ class MainActivity : AppCompatActivity() {
             "[delay_split]",
             "[instant_split]",
             "[ua]",
+            "[ws_key]",
+            "[rotate=a;b]",
             "[netdata]",
             "[protocol]"
         )
@@ -190,7 +241,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.chipPresetDirectSplit.setOnClickListener {
             binding.etPayload.setText(
-                "GET / HTTP/1.1[crlf]Host: [host][crlf][split]User-Agent: [ua][crlf]Connection: Keep-Alive[crlf][crlf]"
+                "GET / HTTP/1.1[crlf]Host: [sni][crlf][crlf][split]GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
             )
             Toast.makeText(this, "Plantilla Directo + Split cargada", Toast.LENGTH_SHORT).show()
         }
@@ -198,7 +249,7 @@ class MainActivity : AppCompatActivity() {
         binding.chipPresetSslWs.setOnClickListener {
             binding.switchUseTls.isChecked = true
             binding.etPayload.setText(
-                "GET wss://[sni]/ HTTP/1.1[crlf]Host: [sni][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
+                "GET wss://[host]/ HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
             )
             Toast.makeText(this, "Plantilla SSL + WebSocket cargada", Toast.LENGTH_SHORT).show()
         }
@@ -481,19 +532,51 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun readConfigFromUi(): VpnConfig {
-        val sshPort = binding.etSshPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 22
-        val proxyPort = binding.etProxyPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 80
+        val rawHost = binding.etSshHost.text?.toString()?.trim().orEmpty()
+        var cleanHost = rawHost
+        var parsedPortFromHost: Int? = null
+        if (rawHost.contains(":") && !rawHost.contains(";") && rawHost.count { it == ':' } == 1) {
+            val parts = rawHost.split(":")
+            val maybePort = parts[1].trim().toIntOrNull()
+            if (maybePort != null && maybePort in 1..65535) {
+                cleanHost = parts[0].trim()
+                parsedPortFromHost = maybePort
+                binding.etSshHost.setText(cleanHost)
+                binding.etSshPort.setText(maybePort.toString())
+            }
+        }
+
+        val rawProxy = binding.etProxyHost.text?.toString()?.trim().orEmpty()
+        var cleanProxy = rawProxy
+        var parsedProxyPort: Int? = null
+        if (rawProxy.contains(":") && !rawProxy.contains(";") && rawProxy.count { it == ':' } == 1) {
+            val parts = rawProxy.split(":")
+            val maybePort = parts[1].trim().toIntOrNull()
+            if (maybePort != null && maybePort in 1..65535) {
+                cleanProxy = parts[0].trim()
+                parsedProxyPort = maybePort
+                binding.etProxyHost.setText(cleanProxy)
+                binding.etProxyPort.setText(maybePort.toString())
+            }
+        }
+
+        val sshPort = parsedPortFromHost
+            ?: binding.etSshPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535)
+            ?: 22
+        val proxyPort = parsedProxyPort
+            ?: binding.etProxyPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535)
+            ?: 80
         val keepAlive = binding.etKeepAlive.text?.toString()?.toIntOrNull()?.coerceIn(5, 120) ?: 25
 
         return VpnConfig(
             profileName = binding.etProfileName.text?.toString()?.trim().orEmpty()
                 .ifBlank { "Servidor hc Yoni" },
-            sshHost = binding.etSshHost.text?.toString()?.trim().orEmpty(),
+            sshHost = cleanHost,
             sshPort = sshPort,
             username = binding.etUsername.text?.toString()?.trim().orEmpty(),
             password = binding.etPassword.text?.toString().orEmpty(),
             privateKey = binding.etPrivateKey.text?.toString().orEmpty(),
-            proxyHost = binding.etProxyHost.text?.toString()?.trim().orEmpty(),
+            proxyHost = cleanProxy,
             proxyPort = proxyPort,
             payload = binding.etPayload.text?.toString().orEmpty(),
             sniHost = binding.etSniHost.text?.toString()?.trim().orEmpty(),
