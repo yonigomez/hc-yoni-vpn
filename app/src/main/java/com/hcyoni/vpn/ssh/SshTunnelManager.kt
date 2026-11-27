@@ -21,9 +21,11 @@ class SshTunnelManager {
 
     fun connect(
         config: VpnConfig,
+        deviceHwid: String,
         socketProtector: (Socket) -> Unit
     ): Session {
         disconnect()
+        VpnStateBus.setServerBanner(null)
 
         JSch.setLogger(object : Logger {
             override fun isEnabled(level: Int): Boolean = level >= Logger.WARN
@@ -34,6 +36,26 @@ class SshTunnelManager {
                 }
             }
         })
+
+        val usingHwidAuto = config.useHwidWhenEmpty &&
+            config.username.isBlank() &&
+            config.password.isBlank() &&
+            config.privateKey.isBlank()
+
+        val effectiveUsername = if (usingHwidAuto) deviceHwid else config.username.trim()
+        val effectivePassword = if (usingHwidAuto) deviceHwid else config.password
+
+        if (effectiveUsername.isBlank()) {
+            throw IllegalStateException("Falta el usuario SSH (o activa autologin por HWID)")
+        }
+
+        if (usingHwidAuto) {
+            VpnStateBus.log(
+                "SSH",
+                "Usuario y clave vacíos: conectando con identificador HWID '$deviceHwid'",
+                LogLevel.INFO
+            )
+        }
 
         val jsch = JSch()
         if (config.privateKey.isNotBlank()) {
@@ -46,9 +68,9 @@ class SshTunnelManager {
             )
         }
 
-        val newSession = jsch.getSession(config.username.trim(), config.sshHost.trim(), config.sshPort)
-        if (config.password.isNotEmpty() && config.privateKey.isBlank()) {
-            newSession.setPassword(config.password)
+        val newSession = jsch.getSession(effectiveUsername, config.sshHost.trim(), config.sshPort)
+        if (effectivePassword.isNotEmpty() && config.privateKey.isBlank()) {
+            newSession.setPassword(effectivePassword)
         }
 
         newSession.setConfig("StrictHostKeyChecking", "no")
@@ -63,14 +85,16 @@ class SshTunnelManager {
         )
 
         newSession.userInfo = object : UserInfo, UIKeyboardInteractive {
-            override fun getPassphrase(): String = config.password
-            override fun getPassword(): String = config.password
+            override fun getPassphrase(): String = effectivePassword
+            override fun getPassword(): String = effectivePassword
             override fun promptPassword(message: String?): Boolean = true
             override fun promptPassphrase(message: String?): Boolean = true
             override fun promptYesNo(message: String?): Boolean = true
             override fun showMessage(message: String?) {
-                if (!message.isNullOrBlank()) {
-                    VpnStateBus.log("SSH", message.trim(), LogLevel.INFO)
+                val clean = message?.trim().orEmpty()
+                if (clean.isNotEmpty() && !config.hideServerBanner) {
+                    VpnStateBus.setServerBanner(clean)
+                    VpnStateBus.log("Banner VPS", clean, LogLevel.SUCCESS)
                 }
             }
 
@@ -82,7 +106,7 @@ class SshTunnelManager {
                 echo: BooleanArray?
             ): Array<String> {
                 val count = prompt?.size ?: 0
-                return Array(count) { config.password }
+                return Array(count) { effectivePassword }
             }
         }
 
@@ -104,7 +128,7 @@ class SshTunnelManager {
 
         VpnStateBus.log(
             "SSH",
-            "Autenticando usuario '${config.username}' en ${config.sshHost}:${config.sshPort}...",
+            "Autenticando usuario '$effectiveUsername' en ${config.sshHost}:${config.sshPort}...",
             LogLevel.INFO
         )
         newSession.connect(20_000)
