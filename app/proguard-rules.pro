@@ -1,0 +1,4 @@
+-keep class hev.htproxy.TProxyService { *; }
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn org.ietf.jgss.**
+-dontwarn java.lang.invoke.**
