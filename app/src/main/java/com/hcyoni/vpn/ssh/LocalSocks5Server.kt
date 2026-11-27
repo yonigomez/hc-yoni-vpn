@@ -23,7 +23,6 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketAddress
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -53,30 +52,19 @@ class LocalSocks5Server(
 
     private val activeSockets = ConcurrentHashMap.newKeySet<Closeable>()
     private val activeChannels = ConcurrentHashMap.newKeySet<ChannelDirectTCPIP>()
-    private val domainIpv4Cache = ConcurrentHashMap<String, InetAddress>()
     private val dnsWireCache = ConcurrentHashMap<String, CachedDnsReply>()
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
 
     private val loggedFirstSuccess = AtomicBoolean(false)
+    private val loggedUdpgwReady = AtomicBoolean(false)
+    private val loggedUdpgwFallback = AtomicBoolean(false)
     private val lastErrorLogMs = AtomicLong(0L)
     private val tcp53BlockedUntilMs = AtomicLong(0L)
 
     val txBytes = AtomicLong(0L)
     val rxBytes = AtomicLong(0L)
-
-    private val udpgwClient: BadVpnUdpgwClient? = if (udpgwEnabled) {
-        BadVpnUdpgwClient(
-            sessionProvider = sessionProvider,
-            udpgwPort = udpgwPort,
-            onBytesTx = { txBytes.addAndGet(it) },
-            onBytesRx = { rxBytes.addAndGet(it) },
-            onLog = onLog
-        )
-    } else {
-        null
-    }
 
     @Volatile
     var listeningPort: Int = 0
@@ -86,8 +74,6 @@ class LocalSocks5Server(
         val server = ServerSocket(0, 256, InetAddress.getByName("127.0.0.1"))
         serverSocket = server
         listeningPort = server.localPort
-
-        udpgwClient?.prewarmAsync()
 
         acceptJob = scope.launch {
             while (isActive && !server.isClosed) {
@@ -105,10 +91,6 @@ class LocalSocks5Server(
     }
 
     fun stop() {
-        try {
-            udpgwClient?.close()
-        } catch (_: Exception) {
-        }
         try {
             serverSocket?.close()
         } catch (_: Exception) {
@@ -131,7 +113,6 @@ class LocalSocks5Server(
             }
         }
         activeSockets.clear()
-        domainIpv4Cache.clear()
         dnsWireCache.clear()
 
         acceptJob?.cancel()
@@ -219,8 +200,7 @@ class LocalSocks5Server(
             return
         }
 
-        // Rechazar DNS privado 853 al instante para forzar DNS estándar sin demoras
-        if (destPort == 853 || destHost == "198.18.0.2") {
+        if (destPort == 853) {
             sendSocksReply(clientOut, 0x05)
             return
         }
@@ -230,6 +210,8 @@ class LocalSocks5Server(
             sendSocksReply(clientOut, 0x01)
             return
         }
+
+        val isUdpgwControl = udpgwEnabled && destHost == "127.0.0.1" && destPort == udpgwPort
 
         var channel: ChannelDirectTCPIP? = null
         try {
@@ -241,30 +223,50 @@ class LocalSocks5Server(
 
             val sshIn = channel.inputStream
             val sshOut = channel.outputStream
-            channel.connect(8_000)
+            channel.connect(if (isUdpgwControl) 5_000 else 8_000)
             activeChannels.add(channel)
 
             sendSocksReply(clientOut, 0x00)
 
-            if (loggedFirstSuccess.compareAndSet(false, true)) {
+            if (isUdpgwControl) {
+                try {
+                    client.trafficClass = 0x10
+                    client.sendBufferSize = 131_072
+                    client.receiveBufferSize = 131_072
+                } catch (_: Exception) {
+                }
+                if (loggedUdpgwReady.compareAndSet(false, true)) {
+                    onLog("Juegos / UDP nativo conectado directo a UDPGW ($udpgwPort)", LogLevel.SUCCESS)
+                }
+            } else if (loggedFirstSuccess.compareAndSet(false, true)) {
                 val targetLabel = if (hideServerDetails) "destino remoto" else "$destHost:$destPort"
                 onLog("Primer enlace TCP activo hacia $targetLabel", LogLevel.SUCCESS)
             }
 
+            val upBuf = if (isUdpgwControl) 65_536 else 8_192
+            val downBuf = if (isUdpgwControl) 65_536 else 32_768
+
             coroutineScope {
                 val up = launch {
-                    copyStream(clientIn, sshOut) { bytes ->
-                        txBytes.addAndGet(bytes)
+                    try {
+                        Thread.currentThread().priority =
+                            if (isUdpgwControl) Thread.MAX_PRIORITY else (Thread.NORM_PRIORITY - 1)
+                    } catch (_: Exception) {
                     }
+                    copyStream(clientIn, sshOut, upBuf) { bytes -> txBytes.addAndGet(bytes) }
                     try {
                         sshOut.close()
                     } catch (_: Exception) {
                     }
                 }
                 val down = launch {
-                    copyStream(sshIn, clientOut) { bytes ->
-                        rxBytes.addAndGet(bytes)
+                    try {
+                        Thread.currentThread().priority =
+                            if (isUdpgwControl) Thread.MAX_PRIORITY else (Thread.NORM_PRIORITY + 1)
+                    } catch (_: Exception) {
                     }
+                    // Drenar sshIn rápido evita llenar el PipedInputStream interno de JSch
+                    copyStream(sshIn, clientOut, downBuf) { bytes -> rxBytes.addAndGet(bytes) }
                     try {
                         client.shutdownOutput()
                     } catch (_: Exception) {
@@ -278,6 +280,23 @@ class LocalSocks5Server(
                 down.join()
             }
         } catch (e: Exception) {
+            if (isUdpgwControl) {
+                try {
+                    channel?.disconnect()
+                } catch (_: Exception) {
+                }
+                channel = null
+                if (loggedUdpgwFallback.compareAndSet(false, true)) {
+                    onLog(
+                        "Puerto $udpgwPort no activo en esta VPS; activando puente DNS interno",
+                        LogLevel.WARN
+                    )
+                }
+                sendSocksReply(clientOut, 0x00)
+                runLocalDnsUdpgwFallback(clientIn, clientOut)
+                return
+            }
+
             if (destPort != 80) {
                 logRateLimited("Enlace TCP rechazado ($destPort): ${e.message ?: "cerrado"}")
             }
@@ -296,18 +315,83 @@ class LocalSocks5Server(
         }
     }
 
+    private suspend fun runLocalDnsUdpgwFallback(clientIn: InputStream, clientOut: OutputStream) {
+        val dataIn = DataInputStream(clientIn)
+        val writeLock = Any()
+        coroutineScope {
+            try {
+                while (isActive) {
+                    val b0 = dataIn.read()
+                    if (b0 == -1) break
+                    val b1 = dataIn.read()
+                    if (b1 == -1) break
+                    val frameLen = (b0 and 0xFF) or ((b1 and 0xFF) shl 8)
+                    if (frameLen <= 0 || frameLen > 32_768) break
+
+                    val frame = ByteArray(frameLen)
+                    dataIn.readFully(frame)
+                    if (frameLen < 3) continue
+
+                    val flags = frame[0].toInt() and 0xFF
+                    if ((flags and 0x01) != 0) continue
+
+                    val isIpv6 = (flags and 0x08) != 0
+                    val addrSize = if (isIpv6) 18 else 6
+                    val payloadOffset = 3 + addrSize
+                    if (frameLen <= payloadOffset) continue
+
+                    val dstPort = if (!isIpv6) {
+                        ((frame[7].toInt() and 0xFF) shl 8) or (frame[8].toInt() and 0xFF)
+                    } else {
+                        ((frame[19].toInt() and 0xFF) shl 8) or (frame[20].toInt() and 0xFF)
+                    }
+
+                    val isDns = ((flags and 0x04) != 0) || (dstPort == 53)
+                    if (!isDns) continue
+
+                    val headerCopy = frame.copyOfRange(0, payloadOffset)
+                    val dnsQuery = frame.copyOfRange(payloadOffset, frameLen)
+
+                    launch {
+                        txBytes.addAndGet(dnsQuery.size.toLong())
+                        val resp = resolveDnsWithCache(dnsQuery) ?: return@launch
+                        rxBytes.addAndGet(resp.size.toLong())
+
+                        val innerLen = headerCopy.size + resp.size
+                        val outFrame = ByteArray(2 + innerLen)
+                        outFrame[0] = (innerLen and 0xFF).toByte()
+                        outFrame[1] = ((innerLen ushr 8) and 0xFF).toByte()
+                        System.arraycopy(headerCopy, 0, outFrame, 2, headerCopy.size)
+                        System.arraycopy(resp, 0, outFrame, 2 + headerCopy.size, resp.size)
+
+                        synchronized(writeLock) {
+                            try {
+                                clientOut.write(outFrame)
+                                clientOut.flush()
+                            } catch (_: IOException) {
+                            }
+                        }
+                    }
+                }
+            } catch (_: EOFException) {
+            } catch (_: IOException) {
+            }
+        }
+    }
+
     private suspend fun handleUdpAssociate(
         controlSocket: Socket,
         controlIn: InputStream,
         controlOut: OutputStream
     ) {
-        val udpSocket = DatagramSocket(0, InetAddress.getByName("127.0.0.1")).apply {
-            receiveBufferSize = 524_288
-            sendBufferSize = 524_288
-            trafficClass = 0x10
+        val udpSocket = try {
+            DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        } catch (_: Exception) {
+            return
         }
         activeSockets.add(udpSocket)
         val udpPort = udpSocket.localPort
+        var dnsOnlySession = false
 
         controlOut.write(
             byteArrayOf(
@@ -321,10 +405,6 @@ class LocalSocks5Server(
 
         coroutineScope {
             val udpJob = launch {
-                try {
-                    Thread.currentThread().priority = Thread.MAX_PRIORITY
-                } catch (_: Exception) {
-                }
                 val buf = ByteArray(4096)
                 while (isActive && !udpSocket.isClosed) {
                     try {
@@ -332,7 +412,48 @@ class LocalSocks5Server(
                         udpSocket.receive(packet)
                         val data = packet.data.copyOf(packet.length)
                         val senderAddr = packet.socketAddress
-                        processUdpPacketDispatch(this, udpSocket, senderAddr, data)
+                        if (data.size < 10 || data[2].toInt() != 0) continue
+
+                        val atyp = data[3].toInt() and 0xFF
+                        val addrEnd = when (atyp) {
+                            0x01 -> 8
+                            0x03 -> 5 + (data[4].toInt() and 0xFF)
+                            0x04 -> 20
+                            else -> continue
+                        }
+                        val headerEnd = addrEnd + 2
+                        if (data.size <= headerEnd) continue
+                        val dstPort = ((data[addrEnd].toInt() and 0xFF) shl 8) or (data[addrEnd + 1].toInt() and 0xFF)
+                        if (dstPort != 53) continue
+
+                        if (!dnsOnlySession) {
+                            dnsOnlySession = true
+                            try {
+                                controlSocket.soTimeout = 2_000
+                            } catch (_: Exception) {
+                            }
+                        }
+
+                        val dnsQuery = data.copyOfRange(headerEnd, data.size)
+                        launch {
+                            txBytes.addAndGet(dnsQuery.size.toLong())
+                            val resp = resolveDnsWithCache(dnsQuery) ?: return@launch
+                            rxBytes.addAndGet(resp.size.toLong())
+
+                            val hdr = data.copyOfRange(0, headerEnd)
+                            hdr[0] = 0
+                            hdr[1] = 0
+                            hdr[2] = 0
+                            val outPacket = ByteArray(hdr.size + resp.size)
+                            System.arraycopy(hdr, 0, outPacket, 0, hdr.size)
+                            System.arraycopy(resp, 0, outPacket, hdr.size, resp.size)
+                            try {
+                                if (!udpSocket.isClosed) {
+                                    udpSocket.send(DatagramPacket(outPacket, outPacket.size, senderAddr))
+                                }
+                            } catch (_: IOException) {
+                            }
+                        }
                     } catch (_: IOException) {
                         break
                     }
@@ -349,114 +470,10 @@ class LocalSocks5Server(
                 if (n <= 0) break
             }
             udpJob.cancel()
-            udpgwClient?.unregisterSocket(udpSocket)
             activeSockets.remove(udpSocket)
             try {
                 udpSocket.close()
             } catch (_: Exception) {
-            }
-        }
-    }
-
-    private fun processUdpPacketDispatch(
-        parentScope: CoroutineScope,
-        udpSocket: DatagramSocket,
-        clientAddr: SocketAddress,
-        data: ByteArray
-    ) {
-        if (data.size < 10) return
-        if (data[2].toInt() != 0) return
-
-        val atyp = data[3].toInt() and 0xFF
-        val addrEnd: Int
-        var domainToResolve: String? = null
-        var directInet: InetAddress? = null
-
-        when (atyp) {
-            0x01 -> {
-                addrEnd = 8
-                if (data.size <= addrEnd + 2) return
-                directInet = InetAddress.getByAddress(data.copyOfRange(4, 8))
-            }
-            0x03 -> {
-                val dLen = data[4].toInt() and 0xFF
-                addrEnd = 5 + dLen
-                if (data.size <= addrEnd + 2) return
-                val hostName = String(data.copyOfRange(5, addrEnd), Charsets.UTF_8)
-                val cached = domainIpv4Cache[hostName]
-                if (cached != null) {
-                    directInet = cached
-                } else {
-                    domainToResolve = hostName
-                }
-            }
-            0x04 -> {
-                addrEnd = 20
-                if (data.size <= addrEnd + 2) return
-                directInet = InetAddress.getByAddress(data.copyOfRange(4, 20))
-            }
-            else -> return
-        }
-
-        val headerEnd = addrEnd + 2
-        if (data.size <= headerEnd) return
-
-        val dstPort = ((data[addrEnd].toInt() and 0xFF) shl 8) or (data[addrEnd + 1].toInt() and 0xFF)
-        val payload = data.copyOfRange(headerEnd, data.size)
-
-        if (dstPort == 53) {
-            parentScope.launch {
-                txBytes.addAndGet(payload.size.toLong())
-                val dnsResponse = resolveDnsWithCache(payload) ?: return@launch
-                rxBytes.addAndGet(dnsResponse.size.toLong())
-
-                val headerSlice = data.copyOfRange(0, headerEnd)
-                headerSlice[0] = 0
-                headerSlice[1] = 0
-                headerSlice[2] = 0
-
-                val outPacket = ByteArray(headerSlice.size + dnsResponse.size)
-                System.arraycopy(headerSlice, 0, outPacket, 0, headerSlice.size)
-                System.arraycopy(dnsResponse, 0, outPacket, headerSlice.size, dnsResponse.size)
-                try {
-                    if (!udpSocket.isClosed) {
-                        udpSocket.send(DatagramPacket(outPacket, outPacket.size, clientAddr))
-                    }
-                } catch (_: IOException) {
-                }
-            }
-            return
-        }
-
-        if (dstPort in NON_GAME_UDP_BLOCK_PORTS) return
-        if (!udpgwEnabled || udpgwClient == null) return
-        if (atyp == 0x04 && !enableIpv6) return
-
-        val socksAddrHeader = data.copyOfRange(3, headerEnd)
-        val knownInet = directInet
-        if (knownInet != null) {
-            udpgwClient.sendUdpPacket(
-                udpSocket = udpSocket,
-                clientAddr = clientAddr,
-                atyp = atyp,
-                dstAddress = knownInet,
-                dstPort = dstPort,
-                socksAddrHeader = socksAddrHeader,
-                payload = payload
-            )
-        } else if (domainToResolve != null) {
-            val host = domainToResolve
-            parentScope.launch {
-                val resolved = resolveDomainViaTunnel(host) ?: return@launch
-                udpgwClient.sendUdpPacket(
-                    udpSocket = udpSocket,
-                    clientAddr = clientAddr,
-                    atyp = atyp,
-                    dstAddress = resolved,
-                    dstPort = dstPort,
-                    socksAddrHeader = socksAddrHeader,
-                    payload = payload
-                )
             }
         }
     }
@@ -479,7 +496,7 @@ class LocalSocks5Server(
         if (dnsWireCache.size > 1500) {
             dnsWireCache.clear()
         }
-        dnsWireCache[cacheKey] = CachedDnsReply(resp.clone(), now + 60_000L)
+        dnsWireCache[cacheKey] = CachedDnsReply(resp.clone(), now + 90_000L)
         return resp
     }
 
@@ -488,84 +505,9 @@ class LocalSocks5Server(
         if (now >= tcp53BlockedUntilMs.get()) {
             val tcpResp = resolveDnsOverSshTcp(query)
             if (tcpResp != null) return tcpResp
-            // Si el puerto 53 está bloqueado en la VPS, saltamos directo a DoH 443 por 2 minutos
             tcp53BlockedUntilMs.set(now + 120_000L)
         }
         return resolveDnsOverHttps443(query)
-    }
-
-    private fun resolveDomainViaTunnel(domain: String): InetAddress? {
-        domainIpv4Cache[domain]?.let { return it }
-
-        if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(domain)) {
-            return try {
-                InetAddress.getByName(domain).also { domainIpv4Cache[domain] = it }
-            } catch (_: Exception) {
-                null
-            }
-        }
-
-        val query = buildDnsAQuery(domain) ?: return null
-        val resp = resolveDnsWithCache(query) ?: return null
-        val parsed = parseFirstARecord(resp) ?: return null
-        domainIpv4Cache[domain] = parsed
-        return parsed
-    }
-
-    private fun buildDnsAQuery(domain: String): ByteArray? {
-        val labels = domain.trim().trimEnd('.').split(".")
-        if (labels.isEmpty()) return null
-        val out = ByteArrayOutputStream(64)
-        out.write(byteArrayOf(0x48, 0x43, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        for (lbl in labels) {
-            val bytes = lbl.toByteArray(Charsets.UTF_8)
-            if (bytes.isEmpty() || bytes.size > 63) return null
-            out.write(bytes.size)
-            out.write(bytes)
-        }
-        out.write(0x00)
-        out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
-        return out.toByteArray()
-    }
-
-    private fun parseFirstARecord(resp: ByteArray): InetAddress? {
-        if (resp.size < 12) return null
-        val qdCount = ((resp[4].toInt() and 0xFF) shl 8) or (resp[5].toInt() and 0xFF)
-        val anCount = ((resp[6].toInt() and 0xFF) shl 8) or (resp[7].toInt() and 0xFF)
-        if (anCount <= 0) return null
-
-        var pos = 12
-        repeat(qdCount) {
-            pos = skipDnsName(resp, pos)
-            if (pos < 0 || pos + 4 > resp.size) return null
-            pos += 4
-        }
-
-        repeat(anCount) {
-            pos = skipDnsName(resp, pos)
-            if (pos < 0 || pos + 10 > resp.size) return null
-            val rType = ((resp[pos].toInt() and 0xFF) shl 8) or (resp[pos + 1].toInt() and 0xFF)
-            val rdLen = ((resp[pos + 8].toInt() and 0xFF) shl 8) or (resp[pos + 9].toInt() and 0xFF)
-            pos += 10
-            if (pos + rdLen > resp.size) return null
-            if (rType == 1 && rdLen == 4) {
-                return InetAddress.getByAddress(resp.copyOfRange(pos, pos + 4))
-            }
-            pos += rdLen
-        }
-        return null
-    }
-
-    private fun skipDnsName(buf: ByteArray, start: Int): Int {
-        var pos = start
-        var steps = 0
-        while (pos < buf.size && steps++ < 128) {
-            val len = buf[pos].toInt() and 0xFF
-            if (len == 0) return pos + 1
-            if ((len and 0xC0) == 0xC0) return if (pos + 2 <= buf.size) pos + 2 else -1
-            pos += 1 + len
-        }
-        return -1
     }
 
     private fun resolveDnsOverSshTcp(query: ByteArray): ByteArray? {
@@ -706,9 +648,10 @@ class LocalSocks5Server(
     private fun copyStream(
         input: InputStream,
         output: OutputStream,
+        bufSize: Int,
         onBytes: (Long) -> Unit
     ) {
-        val buffer = ByteArray(16_384)
+        val buffer = ByteArray(bufSize)
         try {
             while (true) {
                 val read = input.read(buffer)
@@ -760,9 +703,5 @@ class LocalSocks5Server(
             } catch (_: Exception) {
             }
         }
-    }
-
-    companion object {
-        private val NON_GAME_UDP_BLOCK_PORTS = setOf(80, 137, 138, 139, 443, 1900, 5353)
     }
 }
