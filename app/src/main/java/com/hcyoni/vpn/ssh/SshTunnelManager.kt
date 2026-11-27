@@ -84,6 +84,15 @@ class SshTunnelManager {
 
         newSession.setConfig("StrictHostKeyChecking", "no")
         newSession.setConfig("Compression", "no")
+        // Priorizar AES acelerado por hardware ARMv8 antes que ChaCha20
+        newSession.setConfig(
+            "cipher.c2s",
+            "aes128-gcm@openssh.com,aes128-ctr,aes256-gcm@openssh.com,aes256-ctr,chacha20-poly1305@openssh.com"
+        )
+        newSession.setConfig(
+            "cipher.s2c",
+            "aes128-gcm@openssh.com,aes128-ctr,aes256-gcm@openssh.com,aes256-ctr,chacha20-poly1305@openssh.com"
+        )
         newSession.setConfig(
             "PreferredAuthentications",
             if (config.privateKey.isNotBlank()) {
