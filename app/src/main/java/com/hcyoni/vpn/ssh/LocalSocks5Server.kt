@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -219,7 +220,7 @@ class LocalSocks5Server(
             return
         }
 
-        if (destPort == 853) {
+        if (destPort == 853 || destHost == "198.18.0.2") {
             sendSocksReply(clientOut, 0x05)
             return
         }
@@ -240,7 +241,7 @@ class LocalSocks5Server(
 
             val sshIn = channel.inputStream
             val sshOut = channel.outputStream
-            channel.connect(8_000)
+            channel.connect(10_000)
             activeChannels.add(channel)
 
             sendSocksReply(clientOut, 0x00)
@@ -250,13 +251,21 @@ class LocalSocks5Server(
                 onLog("Primer enlace TCP activo hacia $targetLabel", LogLevel.SUCCESS)
             }
 
+            val lastActivityMs = AtomicLong(System.currentTimeMillis())
+            val upDone = AtomicBoolean(false)
+            val downDone = AtomicBoolean(false)
+
             coroutineScope {
                 val up = launch {
                     try {
                         Thread.currentThread().priority = Thread.NORM_PRIORITY - 1
                     } catch (_: Exception) {
                     }
-                    copyStream(clientIn, sshOut, 8_192) { bytes -> txBytes.addAndGet(bytes) }
+                    copyStream(clientIn, sshOut, 8_192) { bytes ->
+                        lastActivityMs.set(System.currentTimeMillis())
+                        txBytes.addAndGet(bytes)
+                    }
+                    upDone.set(true)
                     try {
                         sshOut.close()
                     } catch (_: Exception) {
@@ -267,7 +276,11 @@ class LocalSocks5Server(
                         Thread.currentThread().priority = Thread.NORM_PRIORITY + 1
                     } catch (_: Exception) {
                     }
-                    copyStream(sshIn, clientOut, 32_768) { bytes -> rxBytes.addAndGet(bytes) }
+                    copyStream(sshIn, clientOut, 32_768) { bytes ->
+                        lastActivityMs.set(System.currentTimeMillis())
+                        rxBytes.addAndGet(bytes)
+                    }
+                    downDone.set(true)
                     try {
                         client.shutdownOutput()
                     } catch (_: Exception) {
@@ -277,12 +290,29 @@ class LocalSocks5Server(
                     } catch (_: Exception) {
                     }
                 }
+                // Si la app cerró su lado y el servidor remoto no envía nada por 8s, liberar canal zombi
+                val reaper = launch {
+                    while (!upDone.get() && !downDone.get()) {
+                        delay(1_000)
+                    }
+                    while (upDone.get() && !downDone.get()) {
+                        delay(2_000)
+                        if (System.currentTimeMillis() - lastActivityMs.get() >= 8_000L) {
+                            try {
+                                channel.disconnect()
+                            } catch (_: Exception) {
+                            }
+                            break
+                        }
+                    }
+                }
                 up.join()
                 down.join()
+                reaper.cancel()
             }
         } catch (e: Exception) {
-            if (destPort != 80) {
-                logRateLimited("Enlace TCP rechazado ($destPort): ${e.message ?: "cerrado"}")
+            if (!loggedFirstSuccess.get() && destPort != 80) {
+                logRateLimited("Enlace TCP no abierto ($destPort): ${e.message ?: "cerrado"}")
             }
             try {
                 sendSocksReply(clientOut, 0x05)
