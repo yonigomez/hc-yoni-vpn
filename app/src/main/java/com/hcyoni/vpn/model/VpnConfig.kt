@@ -34,7 +34,7 @@ data class TrafficStats(
 )
 
 data class VpnConfig(
-    val profileName: String = "Servidor hc Yoni",
+    val profileName: String = "Servidor HC YONI",
     val sshHost: String = "",
     val sshPort: Int = 22,
     val username: String = "",
@@ -55,8 +55,11 @@ data class VpnConfig(
     val udpgwEnabled: Boolean = true,
     val udpgwPort: Int = 7300,
     val useHwidWhenEmpty: Boolean = true,
+    val wifiShareEnabled: Boolean = false,
+    val wifiSharePort: Int = 8080,
+    val allowWifiShare: Boolean = true,
     val excludedApps: Set<String> = emptySet(),
-    // Opciones de bloqueo, seguridad y banner al guardar archivo .yoni
+    // Bloqueos y seguridad de archivos .yoni
     val lockPayload: Boolean = false,
     val lockServerAndProxy: Boolean = false,
     val lockCredentials: Boolean = false,
@@ -69,7 +72,8 @@ data class VpnConfig(
 ) {
     fun hasAnyLock(): Boolean {
         return lockPayload || lockServerAndProxy || lockCredentials ||
-            mobileDataOnly || blockRoot || lockedHwid.isNotBlank() || expiryDateMillis > 0L
+            mobileDataOnly || blockRoot || lockedHwid.isNotBlank() ||
+            expiryDateMillis > 0L || !allowWifiShare
     }
 
     fun toJson(includeSecrets: Boolean = true): String {
@@ -95,6 +99,9 @@ data class VpnConfig(
         obj.put("udpgwEnabled", udpgwEnabled)
         obj.put("udpgwPort", udpgwPort)
         obj.put("useHwidWhenEmpty", useHwidWhenEmpty)
+        obj.put("wifiShareEnabled", wifiShareEnabled)
+        obj.put("wifiSharePort", wifiSharePort)
+        obj.put("allowWifiShare", allowWifiShare)
         obj.put("lockPayload", lockPayload)
         obj.put("lockServerAndProxy", lockServerAndProxy)
         obj.put("lockCredentials", lockCredentials)
@@ -126,7 +133,7 @@ data class VpnConfig(
                 }
             }
             return VpnConfig(
-                profileName = obj.optString("profileName", "Servidor hc Yoni"),
+                profileName = obj.optString("profileName", "Servidor HC YONI"),
                 sshHost = obj.optString("sshHost", "").trim(),
                 sshPort = obj.optInt("sshPort", 22).coerceIn(1, 65535),
                 username = obj.optString("username", "").trim(),
@@ -147,6 +154,9 @@ data class VpnConfig(
                 udpgwEnabled = obj.optBoolean("udpgwEnabled", true),
                 udpgwPort = obj.optInt("udpgwPort", 7300).coerceIn(1, 65535),
                 useHwidWhenEmpty = obj.optBoolean("useHwidWhenEmpty", true),
+                wifiShareEnabled = obj.optBoolean("wifiShareEnabled", false),
+                wifiSharePort = obj.optInt("wifiSharePort", 8080).coerceIn(1024, 65535),
+                allowWifiShare = obj.optBoolean("allowWifiShare", true),
                 excludedApps = excluded,
                 lockPayload = obj.optBoolean("lockPayload", false),
                 lockServerAndProxy = obj.optBoolean("lockServerAndProxy", false),
