@@ -21,13 +21,17 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.hcyoni.vpn.databinding.DialogSaveConfigBinding
 import com.hcyoni.vpn.model.VpnConfig
+import com.hcyoni.vpn.ssh.WifiShareProxyServer
+import com.hcyoni.vpn.util.BatteryAndSystemHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,12 +74,8 @@ object SaveAndDialogsHelper {
         val bodyHtml = if (rawContent.contains("<") && rawContent.contains(">")) {
             rawContent
         } else {
-            val escaped = TextUtils.htmlEncode(rawContent)
-                .replace("\n", "<br>")
-            val linked = escaped.replace(
-                Regex("(https?://[^\\s<]+)"),
-                "<a href=\"$1\">$1</a>"
-            )
+            val escaped = TextUtils.htmlEncode(rawContent).replace("\n", "<br>")
+            val linked = escaped.replace(Regex("(https?://[^\\s<]+)"), "<a href=\"$1\">$1</a>")
             "<p align=\"center\">$linked</p>"
         }
 
@@ -117,7 +117,7 @@ object SaveAndDialogsHelper {
         val wv = WebView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                (context.resources.displayMetrics.heightPixels * 0.58).toInt()
+                (context.resources.displayMetrics.heightPixels * 0.60).toInt()
             )
         }
         configureBannerWebView(wv, context)
@@ -220,6 +220,7 @@ object SaveAndDialogsHelper {
                 val lockPayload = dlg.cbLockAll.isChecked || dlg.cbLockPayloadOnly.isChecked
                 val lockServer = dlg.cbLockAll.isChecked && !dlg.cbUnlockProxy.isChecked
                 val lockCreds = dlg.cbLockAll.isChecked && !dlg.cbUnlockUserPass.isChecked
+                val allowWifi = dlg.cbAllowWifiShare.isChecked
 
                 val targetHwid = if (dlg.cbLockHwid.isChecked) {
                     dlg.etSaveTargetHwid.text?.toString()?.trim().orEmpty()
@@ -246,6 +247,8 @@ object SaveAndDialogsHelper {
                 }
 
                 val secured = baseConfig.copy(
+                    allowWifiShare = allowWifi,
+                    wifiShareEnabled = if (allowWifi) baseConfig.wifiShareEnabled else false,
                     lockPayload = lockPayload,
                     lockServerAndProxy = lockServer,
                     lockCredentials = lockCreds,
@@ -262,29 +265,70 @@ object SaveAndDialogsHelper {
             .show()
     }
 
-    fun showImportPasswordPrompt(
+    fun showWifiShareDialog(
         context: Context,
-        onPasswordEntered: (String) -> Unit
+        current: VpnConfig,
+        onCopyProxyAddr: (String) -> Unit,
+        onSave: (enabled: Boolean, port: Int) -> Unit
     ) {
-        val input = EditText(context).apply {
-            hint = "Ingresa la contraseña del archivo"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        if (!current.allowWifiShare) {
+            MaterialAlertDialogBuilder(context)
+                .setTitle("Pasar Wi-Fi (Hotspot)")
+                .setMessage("🔒 Esta función fue bloqueada por el creador del servidor al exportar el archivo.")
+                .setPositiveButton("Entendido", null)
+                .show()
+            return
         }
+
+        val lanIp = WifiShareProxyServer.detectHotspotIpAddress()
         val box = LinearLayout(context).apply {
-            setPadding(48, 24, 48, 8)
-            addView(input)
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 12)
         }
+
+        val swEnable = MaterialSwitch(context).apply {
+            text = "Activar Proxy para Pasar Wi-Fi"
+            isChecked = current.wifiShareEnabled
+        }
+        val etPort = EditText(context).apply {
+            hint = "Puerto del proxy (8080)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(current.wifiSharePort.toString())
+        }
+        val tvGuide = TextView(context).apply {
+            setPadding(0, 18, 0, 0)
+            textSize = 12.5f
+            text = """
+                IP detectada en tu Zona Wi-Fi: $lanIp
+                Puerto: ${current.wifiSharePort}
+
+                Cómo conectar otro celular o PC:
+                1. Activa aquí el Proxy y enciende tu Zona Wi-Fi (Hotspot).
+                2. En el otro dispositivo, conéctate a tu Wi-Fi y entra en Ajustes de red → Proxy → Manual.
+                3. Escribe Servidor: $lanIp y Puerto: ${etPort.text} y guarda.
+            """.trimIndent()
+        }
+
+        box.addView(swEnable)
+        box.addView(etPort)
+        box.addView(tvGuide)
+
         MaterialAlertDialogBuilder(context)
-            .setTitle("Archivo protegido con clave")
+            .setTitle("Pasar Wi-Fi (Sin Root)")
             .setView(box)
-            .setPositiveButton("Abrir") { _, _ ->
-                onPasswordEntered(input.text?.toString().orEmpty())
+            .setPositiveButton("Aplicar") { _, _ ->
+                val p = etPort.text?.toString()?.toIntOrNull()?.coerceIn(1024, 65535) ?: 8080
+                onSave(swEnable.isChecked, p)
+            }
+            .setNeutralButton("Copiar IP:Puerto") { _, _ ->
+                val p = etPort.text?.toString()?.toIntOrNull()?.coerceIn(1024, 65535) ?: 8080
+                onCopyProxyAddr("$lanIp:$p")
             }
             .setNegativeButton("Cancelar", null)
             .show()
     }
 
-    fun showGameAndDnsDialog(
+    fun showFullSettingsDialog(
         context: Context,
         current: VpnConfig,
         onApply: (VpnConfig) -> Unit
@@ -292,7 +336,7 @@ object SaveAndDialogsHelper {
         val scroll = ScrollView(context)
         val box = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 12)
+            setPadding(48, 20, 48, 12)
         }
 
         val swUdpgw = CheckBox(context).apply {
@@ -331,20 +375,32 @@ object SaveAndDialogsHelper {
             isChecked = current.autoReconnect
         }
         val swBoot = MaterialSwitch(context).apply {
-            text = "Reconectar al encender el teléfono"
+            text = "Iniciar automáticamente al encender el celular"
             isChecked = current.autoStartOnBoot
         }
         val swIpv6 = MaterialSwitch(context).apply {
-            text = "Permitir reenvío IPv6"
+            text = "Permitir reenvío IPv6 en el túnel"
             isChecked = current.enableIpv6
         }
 
-        listOf(swUdpgw, etPort, swDns, etDns1, etDns2, etKeepAlive, swHwidAuto, swReconnect, swBoot, swIpv6)
-            .forEach { box.addView(it) }
+        val batteryOk = BatteryAndSystemHelper.isIgnoringBatteryOptimizations(context)
+        val btnBattery = MaterialButton(context).apply {
+            text = if (batteryOk) "✅ No suspender aplicación (Activo)" else "⚠️ Activar: No suspender aplicación"
+            setOnClickListener { showBatteryProtectionDialog(context) }
+        }
+        val btnAlwaysVpn = MaterialButton(context).apply {
+            text = "Configurar VPN siempre activa (Sistema)"
+            setOnClickListener { BatteryAndSystemHelper.openVpnSystemSettings(context) }
+        }
+
+        listOf(
+            swUdpgw, etPort, swDns, etDns1, etDns2, etKeepAlive,
+            swHwidAuto, swReconnect, swBoot, swIpv6, btnBattery, btnAlwaysVpn
+        ).forEach { box.addView(it) }
         scroll.addView(box)
 
         MaterialAlertDialogBuilder(context)
-            .setTitle("Juegos (7300), DNS y Red")
+            .setTitle("Ajustes de HC YONI")
             .setView(scroll)
             .setPositiveButton("Guardar") { _, _ ->
                 val port = etPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 7300
@@ -370,6 +426,38 @@ object SaveAndDialogsHelper {
             .show()
     }
 
+    fun showBatteryProtectionDialog(context: Context) {
+        MaterialAlertDialogBuilder(context)
+            .setTitle("Protección Sin Suspensión")
+            .setMessage(BatteryAndSystemHelper.getBackgroundProtectionGuide())
+            .setPositiveButton("Sin restricciones") { _, _ -> BatteryAndSystemHelper.requestIgnoreBatteryOptimization(context) }
+            .setNeutralButton("VPN siempre activa") { _, _ -> BatteryAndSystemHelper.openVpnSystemSettings(context) }
+            .setNegativeButton("Ajustes app") { _, _ -> BatteryAndSystemHelper.openAppBatterySettings(context) }
+            .show()
+    }
+
+    fun showImportPasswordPrompt(
+        context: Context,
+        onPasswordEntered: (String) -> Unit
+    ) {
+        val input = EditText(context).apply {
+            hint = "Ingresa la contraseña del archivo"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val box = LinearLayout(context).apply {
+            setPadding(48, 24, 48, 8)
+            addView(input)
+        }
+        MaterialAlertDialogBuilder(context)
+            .setTitle("Archivo protegido con clave")
+            .setView(box)
+            .setPositiveButton("Abrir") { _, _ ->
+                onPasswordEntered(input.text?.toString().orEmpty())
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
     fun showUsageCreditsDialog(context: Context, myHwid: String, onCopyPhone: () -> Unit) {
         val msg = """
             Aplicación: HC YONI VPN
@@ -379,11 +467,12 @@ object SaveAndDialogsHelper {
             Tu HWID único:
             $myHwid
             
-            Avisos de uso:
-            • Modo Juegos activado por defecto en puerto 7300 (BadVPN UDPGW).
-            • Si dejas Usuario y Contraseña vacíos, HC YONI intentará autenticar automáticamente usando tu HWID.
-            • Los archivos .yoni se guardan encriptados con AES-256 para abrirse únicamente dentro de HC YONI.
-            • Para evitar cierres en segundo plano en Samsung o Xiaomi, configura "Sin Suspensión / Batería" desde este menú.
+            Funciones principales:
+            • Juegos UDPGW activo por defecto en puerto 7300 (optimizado sin QUIC).
+            • Si dejas Usuario y Contraseña vacíos, autentica con tu HWID automáticamente.
+            • Pasar Wi-Fi integrado en puerto 8080 (sin Root).
+            • Archivos .yoni encriptados AES-256 con soporte de Banners HTML.
+            • Para que no se cierre en Samsung o Xiaomi, configura "No Suspender App" desde Ajustes o el Menú.
         """.trimIndent()
 
         MaterialAlertDialogBuilder(context)
