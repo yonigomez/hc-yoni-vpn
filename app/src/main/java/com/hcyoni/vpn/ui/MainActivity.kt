@@ -244,7 +244,6 @@ class MainActivity : AppCompatActivity() {
         binding.btnCopyHwidInline.text = "Mi HWID: $myHwid (Copiar)"
 
         binding.btnOpenDrawer.setOnClickListener { binding.drawerLayout.openDrawer(GravityCompat.START) }
-        binding.btnBatteryShield.setOnClickListener { showBatteryDialog() }
         binding.btnBackgroundProtection.setOnClickListener { showBatteryDialog() }
         binding.btnImportConfig.setOnClickListener { importLauncher.launch(arrayOf("*/*")) }
         binding.btnExportConfig.setOnClickListener { launchEncryptedSave() }
@@ -594,7 +593,8 @@ class MainActivity : AppCompatActivity() {
                 binding.badgeStatus.setTextColor(gray)
                 binding.btnConnectToggle.text = getString(R.string.btn_connect)
                 binding.btnConnectToggle.backgroundTintList = ColorStateList.valueOf(cyan)
-                binding.tvDuration.text = "00:00:00"
+                binding.tvDuration.text = "⏱ 0h 00m 00s"
+                binding.tvDuration.setTextColor(gray)
             }
             VpnState.CONNECTING -> {
                 binding.badgeStatus.text = getString(R.string.status_connecting)
@@ -613,12 +613,15 @@ class MainActivity : AppCompatActivity() {
                 binding.badgeStatus.setTextColor(green)
                 binding.btnConnectToggle.text = getString(R.string.btn_disconnect)
                 binding.btnConnectToggle.backgroundTintList = ColorStateList.valueOf(red)
+                binding.tvDuration.setTextColor(green)
             }
             VpnState.ERROR -> {
                 binding.badgeStatus.text = "ERROR"
                 binding.badgeStatus.setTextColor(red)
                 binding.btnConnectToggle.text = getString(R.string.btn_connect)
                 binding.btnConnectToggle.backgroundTintList = ColorStateList.valueOf(cyan)
+                binding.tvDuration.text = "⏱ 0h 00m 00s"
+                binding.tvDuration.setTextColor(gray)
             }
         }
     }
@@ -629,7 +632,11 @@ class MainActivity : AppCompatActivity() {
         binding.tvTotalTraffic.text = "Total: ${formatBytes(stats.rxBytes + stats.txBytes)}"
         if (stats.connectedSinceMs > 0L && VpnStateBus.state.value == VpnState.CONNECTED) {
             val sec = ((System.currentTimeMillis() - stats.connectedSinceMs) / 1000L).coerceAtLeast(0L)
-            binding.tvDuration.text = String.format(Locale.US, "%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60)
+            val hrs = sec / 3600L
+            val mins = (sec % 3600L) / 60L
+            val remSec = sec % 60L
+            binding.tvDuration.text = String.format(Locale.US, "⏱ %dh %02dm %02ds", hrs, mins, remSec)
+            binding.tvDuration.setTextColor(ContextCompat.getColor(this, R.color.accent_green))
         }
     }
 
