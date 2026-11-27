@@ -24,6 +24,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketAddress
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -41,6 +42,11 @@ class LocalSocks5Server(
     private val hideServerDetails: Boolean,
     private val onLog: (String, LogLevel) -> Unit
 ) {
+    private data class CachedDnsReply(
+        val responseBytes: ByteArray,
+        val expiresAtMs: Long
+    )
+
     private val executor = Executors.newCachedThreadPool()
     private val dispatcher = executor.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -48,12 +54,14 @@ class LocalSocks5Server(
     private val activeSockets = ConcurrentHashMap.newKeySet<Closeable>()
     private val activeChannels = ConcurrentHashMap.newKeySet<ChannelDirectTCPIP>()
     private val domainIpv4Cache = ConcurrentHashMap<String, InetAddress>()
+    private val dnsWireCache = ConcurrentHashMap<String, CachedDnsReply>()
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
 
     private val loggedFirstSuccess = AtomicBoolean(false)
     private val lastErrorLogMs = AtomicLong(0L)
+    private val tcp53BlockedUntilMs = AtomicLong(0L)
 
     val txBytes = AtomicLong(0L)
     val rxBytes = AtomicLong(0L)
@@ -124,6 +132,7 @@ class LocalSocks5Server(
         }
         activeSockets.clear()
         domainIpv4Cache.clear()
+        dnsWireCache.clear()
 
         acceptJob?.cancel()
         scope.cancel()
@@ -210,7 +219,8 @@ class LocalSocks5Server(
             return
         }
 
-        if (destHost == "198.18.0.2") {
+        // Rechazar DNS privado 853 al instante para forzar DNS estándar sin demoras
+        if (destPort == 853 || destHost == "198.18.0.2") {
             sendSocksReply(clientOut, 0x05)
             return
         }
@@ -231,7 +241,6 @@ class LocalSocks5Server(
 
             val sshIn = channel.inputStream
             val sshOut = channel.outputStream
-            // Timeout de 8s para responder antes del límite de 15s de tun2socks y evitar apps congeladas
             channel.connect(8_000)
             activeChannels.add(channel)
 
@@ -292,7 +301,11 @@ class LocalSocks5Server(
         controlIn: InputStream,
         controlOut: OutputStream
     ) {
-        val udpSocket = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        val udpSocket = DatagramSocket(0, InetAddress.getByName("127.0.0.1")).apply {
+            receiveBufferSize = 524_288
+            sendBufferSize = 524_288
+            trafficClass = 0x10
+        }
         activeSockets.add(udpSocket)
         val udpPort = udpSocket.localPort
 
@@ -308,6 +321,10 @@ class LocalSocks5Server(
 
         coroutineScope {
             val udpJob = launch {
+                try {
+                    Thread.currentThread().priority = Thread.MAX_PRIORITY
+                } catch (_: Exception) {
+                }
                 val buf = ByteArray(4096)
                 while (isActive && !udpSocket.isClosed) {
                     try {
@@ -390,7 +407,7 @@ class LocalSocks5Server(
         if (dstPort == 53) {
             parentScope.launch {
                 txBytes.addAndGet(payload.size.toLong())
-                val dnsResponse = resolveDnsOverSshTcp(payload) ?: resolveDnsOverHttps443(payload) ?: return@launch
+                val dnsResponse = resolveDnsWithCache(payload) ?: return@launch
                 rxBytes.addAndGet(dnsResponse.size.toLong())
 
                 val headerSlice = data.copyOfRange(0, headerEnd)
@@ -411,10 +428,7 @@ class LocalSocks5Server(
             return
         }
 
-        // Bloquear QUIC (UDP 443/80) y ruido de red local para que YouTube/Chrome/TikTok abran
-        // directo por TCP rápido y NO saturen el túnel UDP 7300 de Free Fire y juegos
         if (dstPort in NON_GAME_UDP_BLOCK_PORTS) return
-
         if (!udpgwEnabled || udpgwClient == null) return
         if (atyp == 0x04 && !enableIpv6) return
 
@@ -447,6 +461,39 @@ class LocalSocks5Server(
         }
     }
 
+    private fun resolveDnsWithCache(query: ByteArray): ByteArray? {
+        if (query.size <= 4) return null
+        val keyBytes = query.copyOfRange(2, query.size)
+        val cacheKey = Base64.getEncoder().encodeToString(keyBytes)
+        val now = System.currentTimeMillis()
+
+        val cached = dnsWireCache[cacheKey]
+        if (cached != null && now < cached.expiresAtMs && cached.responseBytes.size >= 2) {
+            val clone = cached.responseBytes.clone()
+            clone[0] = query[0]
+            clone[1] = query[1]
+            return clone
+        }
+
+        val resp = resolveDnsUncached(query) ?: return null
+        if (dnsWireCache.size > 1500) {
+            dnsWireCache.clear()
+        }
+        dnsWireCache[cacheKey] = CachedDnsReply(resp.clone(), now + 60_000L)
+        return resp
+    }
+
+    private fun resolveDnsUncached(query: ByteArray): ByteArray? {
+        val now = System.currentTimeMillis()
+        if (now >= tcp53BlockedUntilMs.get()) {
+            val tcpResp = resolveDnsOverSshTcp(query)
+            if (tcpResp != null) return tcpResp
+            // Si el puerto 53 está bloqueado en la VPS, saltamos directo a DoH 443 por 2 minutos
+            tcp53BlockedUntilMs.set(now + 120_000L)
+        }
+        return resolveDnsOverHttps443(query)
+    }
+
     private fun resolveDomainViaTunnel(domain: String): InetAddress? {
         domainIpv4Cache[domain]?.let { return it }
 
@@ -459,7 +506,7 @@ class LocalSocks5Server(
         }
 
         val query = buildDnsAQuery(domain) ?: return null
-        val resp = resolveDnsOverSshTcp(query) ?: resolveDnsOverHttps443(query) ?: return null
+        val resp = resolveDnsWithCache(query) ?: return null
         val parsed = parseFirstARecord(resp) ?: return null
         domainIpv4Cache[domain] = parsed
         return parsed
@@ -541,7 +588,7 @@ class LocalSocks5Server(
 
                 val chIn = DataInputStream(ch.inputStream)
                 val chOut = ch.outputStream
-                ch.connect(4_000)
+                ch.connect(2_500)
                 activeChannels.add(ch)
 
                 val framed = ByteArray(2 + query.size)
@@ -586,13 +633,13 @@ class LocalSocks5Server(
                 ch.setOrgPort(443)
                 val chIn = ch.inputStream
                 val chOut = ch.outputStream
-                ch.connect(5_000)
+                ch.connect(4_500)
                 activeChannels.add(ch)
 
                 val adapter = ChannelSocketAdapter(ch, chIn, chOut)
                 val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 tlsSock = factory.createSocket(adapter, hostHeader, 443, true) as SSLSocket
-                tlsSock.soTimeout = 5_000
+                tlsSock.soTimeout = 4_500
                 tlsSock.startHandshake()
 
                 val reqHeaders = "POST /dns-query HTTP/1.1\r\n" +
