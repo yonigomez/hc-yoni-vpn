@@ -27,6 +27,7 @@ import com.hcyoni.vpn.model.VpnConfig
 import com.hcyoni.vpn.model.VpnState
 import com.hcyoni.vpn.ssh.LocalSocks5Server
 import com.hcyoni.vpn.ssh.SshTunnelManager
+import com.hcyoni.vpn.ssh.WifiShareProxyServer
 import com.hcyoni.vpn.util.SecurityAndDeviceHelper
 import hev.htproxy.TProxyService
 import kotlinx.coroutines.CancellationException
@@ -50,6 +51,7 @@ class HcYoniVpnService : VpnService() {
     private val sshManager = SshTunnelManager()
 
     private var socksServer: LocalSocks5Server? = null
+    private var wifiShareServer: WifiShareProxyServer? = null
     private var tunInterface: ParcelFileDescriptor? = null
     private var engineJob: Job? = null
     private var statsJob: Job? = null
@@ -93,6 +95,16 @@ class HcYoniVpnService : VpnService() {
         if (intent?.action == ACTION_DISCONNECT) {
             stopVpnCompletely(userInitiated = true)
             return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_REFRESH_WIFI_SHARE) {
+            if (!shouldRun) {
+                stopForegroundAndSelf()
+                return START_NOT_STICKY
+            }
+            val cfg = ConfigStore.loadConfig(this)
+            serviceScope.launch { applyWifiShareState(cfg) }
+            return START_STICKY
         }
 
         val config = ConfigStore.loadConfig(this)
@@ -214,8 +226,15 @@ class HcYoniVpnService : VpnService() {
     private suspend fun runSingleSession(config: VpnConfig) {
         teardownPipeline()
 
+        // Ajustar buffers de socket para baja latencia en juegos (evita bufferbloat 999+)
         val protector: (Socket) -> Unit = { socket ->
             protect(socket)
+            try {
+                socket.tcpNoDelay = true
+                socket.sendBufferSize = 65_536
+                socket.receiveBufferSize = 131_584
+            } catch (_: Exception) {
+            }
             try {
                 underlyingNetwork?.bindSocket(socket)
             } catch (_: Exception) {
@@ -242,6 +261,8 @@ class HcYoniVpnService : VpnService() {
             "Proxy local activo (Juegos UDPGW: ${if (config.udpgwEnabled) config.udpgwPort else "Desactivado"})",
             LogLevel.INFO
         )
+
+        applyWifiShareState(config)
 
         val tun = establishTunInterface(config)
         tunInterface = tun
@@ -298,6 +319,38 @@ class HcYoniVpnService : VpnService() {
 
         statsJob?.cancel()
         teardownPipeline()
+    }
+
+    private fun applyWifiShareState(config: VpnConfig) {
+        try {
+            wifiShareServer?.stop()
+        } catch (_: Exception) {
+        }
+        wifiShareServer = null
+
+        val socks = socksServer ?: return
+        if (!sshManager.isConnected()) return
+
+        if (!config.wifiShareEnabled) return
+        if (!config.allowWifiShare) {
+            VpnStateBus.log("Pasar Wi-Fi", "Deshabilitado: el creador del servidor bloqueó compartir Wi-Fi", LogLevel.WARN)
+            return
+        }
+
+        try {
+            val share = WifiShareProxyServer(
+                sessionProvider = { sshManager.session },
+                listenPort = config.wifiSharePort,
+                onBytesTx = { socks.txBytes.addAndGet(it) },
+                onBytesRx = { socks.rxBytes.addAndGet(it) }
+            )
+            val boundPort = share.start()
+            wifiShareServer = share
+            val lanIp = WifiShareProxyServer.detectHotspotIpAddress()
+            VpnStateBus.log("Pasar Wi-Fi", "Proxy Wi-Fi activo en $lanIp:$boundPort", LogLevel.SUCCESS)
+        } catch (e: Exception) {
+            VpnStateBus.log("Pasar Wi-Fi", "No se pudo abrir proxy Wi-Fi: ${e.message}", LogLevel.WARN)
+        }
     }
 
     private fun establishTunInterface(config: VpnConfig): ParcelFileDescriptor {
@@ -375,7 +428,7 @@ class HcYoniVpnService : VpnService() {
         sb.append("  tcp-buffer-size: 65536\n")
         sb.append("  connect-timeout: 15000\n")
         sb.append("  tcp-read-write-timeout: 300000\n")
-        sb.append("  udp-read-write-timeout: 60000\n")
+        sb.append("  udp-read-write-timeout: 120000\n")
         sb.append("  log-file: '").append(logPath).append("'\n")
         sb.append("  log-level: warn\n")
 
@@ -446,6 +499,12 @@ class HcYoniVpnService : VpnService() {
     }
 
     private fun teardownPipeline() {
+        try {
+            wifiShareServer?.stop()
+        } catch (_: Exception) {
+        }
+        wifiShareServer = null
+
         try {
             if (TProxyService.TProxyIsRunning()) {
                 TProxyService.TProxyStopService()
@@ -612,6 +671,7 @@ class HcYoniVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "com.hcyoni.vpn.ACTION_CONNECT"
         const val ACTION_DISCONNECT = "com.hcyoni.vpn.ACTION_DISCONNECT"
+        const val ACTION_REFRESH_WIFI_SHARE = "com.hcyoni.vpn.ACTION_REFRESH_WIFI_SHARE"
         private const val CHANNEL_ID = "hc_yoni_vpn_channel"
         private const val NOTIFICATION_ID = 1001
     }
