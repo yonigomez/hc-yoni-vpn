@@ -27,6 +27,7 @@ import com.hcyoni.vpn.model.VpnConfig
 import com.hcyoni.vpn.model.VpnState
 import com.hcyoni.vpn.ssh.LocalSocks5Server
 import com.hcyoni.vpn.ssh.SshTunnelManager
+import com.hcyoni.vpn.util.SecurityAndDeviceHelper
 import hev.htproxy.TProxyService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.net.Socket
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class HcYoniVpnService : VpnService() {
@@ -93,9 +96,10 @@ class HcYoniVpnService : VpnService() {
         }
 
         val config = ConfigStore.loadConfig(this)
-        if (config.sshHost.isBlank()) {
-            VpnStateBus.log("VPN", "Falta configurar el servidor SSH (Host)", LogLevel.ERROR)
-            VpnStateBus.updateState(VpnState.ERROR, "Configura tu servidor SSH primero")
+        val validationError = validateSecurityConstraints(config)
+        if (validationError != null) {
+            VpnStateBus.log("Seguridad", validationError, LogLevel.ERROR)
+            VpnStateBus.updateState(VpnState.ERROR, validationError)
             stopVpnCompletely(userInitiated = true)
             return START_NOT_STICKY
         }
@@ -124,6 +128,29 @@ class HcYoniVpnService : VpnService() {
         super.onDestroy()
     }
 
+    private fun validateSecurityConstraints(config: VpnConfig): String? {
+        if (config.sshHost.isBlank()) {
+            return "Configura tu servidor SSH primero"
+        }
+        if (config.expiryDateMillis > 0L && System.currentTimeMillis() > config.expiryDateMillis) {
+            val fmt = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+            return "Configuración expirada el ${fmt.format(Date(config.expiryDateMillis))}"
+        }
+        if (config.blockRoot && SecurityAndDeviceHelper.isDeviceRooted()) {
+            return "Conexión bloqueada: dispositivo con Root detectado"
+        }
+        if (config.lockedHwid.isNotBlank()) {
+            val myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
+            if (!config.lockedHwid.equals(myHwid, ignoreCase = true)) {
+                return "Archivo restringido a otro dispositivo (HWID no coincide)"
+            }
+        }
+        if (config.mobileDataOnly && !SecurityAndDeviceHelper.isUsingMobileData(this)) {
+            return "Este servidor solo permite Datos Móviles (apaga el Wi-Fi)"
+        }
+        return null
+    }
+
     private fun startEngine(initialConfig: VpnConfig) {
         engineJob?.cancel()
         engineJob = serviceScope.launch {
@@ -131,8 +158,16 @@ class HcYoniVpnService : VpnService() {
             while (isActive && shouldRun) {
                 val cfg = ConfigStore.loadConfig(this@HcYoniVpnService).takeIf { it.sshHost.isNotBlank() }
                     ?: initialConfig
-                attempt++
 
+                val secError = validateSecurityConstraints(cfg)
+                if (secError != null) {
+                    VpnStateBus.log("Seguridad", secError, LogLevel.ERROR)
+                    VpnStateBus.updateState(VpnState.ERROR, secError)
+                    stopVpnCompletely(userInitiated = true)
+                    break
+                }
+
+                attempt++
                 val stateLabel = if (attempt == 1) VpnState.CONNECTING else VpnState.RECONNECTING
                 val statusText = if (attempt == 1) {
                     "Conectando a ${cfg.sshHost}:${cfg.sshPort}..."
@@ -178,27 +213,35 @@ class HcYoniVpnService : VpnService() {
             }
         }
 
-        // 1. Conectar TCP + Payload + SSH2
-        sshManager.connect(config, protector)
+        val myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
 
-        // 2. Iniciar servidor SOCKS5 local conectado al túnel SSH
+        // 1. Conectar TCP + Payload + SSH2 (con autologin HWID si corresponde)
+        sshManager.connect(config, myHwid, protector)
+
+        // 2. Iniciar servidor SOCKS5 local + BadVPN UDPGW (puerto 7300 para juegos)
         val socks = LocalSocks5Server(
             sessionProvider = { sshManager.session },
             dnsPrimary = config.dnsServer,
             dnsSecondary = config.secondaryDns,
             enableIpv6 = config.enableIpv6,
+            udpgwEnabled = config.udpgwEnabled,
+            udpgwPort = config.udpgwPort,
             onLog = { msg, level -> VpnStateBus.log("SOCKS5", msg, level) }
         )
         val socksPort = socks.start()
         socksServer = socks
-        VpnStateBus.log("SOCKS5", "Proxy local activo en 127.0.0.1:$socksPort", LogLevel.INFO)
+        VpnStateBus.log(
+            "SOCKS5",
+            "Proxy local 127.0.0.1:$socksPort (UDPGW Juegos: ${if (config.udpgwEnabled) config.udpgwPort else "Desactivado"})",
+            LogLevel.INFO
+        )
 
-        // 3. Crear interfaz TUN de Android (con DNS mapeado interno 198.18.0.2)
+        // 3. Crear interfaz TUN de Android
         val tun = establishTunInterface(config)
         tunInterface = tun
 
-        // 4. Iniciar motor nativo hev-socks5-tunnel con mapdns
-        val yamlFile = writeHevConfigFile(socksPort, config.enableIpv6)
+        // 4. Iniciar motor nativo hev-socks5-tunnel
+        val yamlFile = writeHevConfigFile(socksPort, config)
         val started = TProxyService.TProxyStartService(yamlFile.absolutePath, tun.fd)
         if (!started) {
             throw IllegalStateException("No se pudo iniciar el núcleo nativo hev-socks5-tunnel")
@@ -209,12 +252,11 @@ class HcYoniVpnService : VpnService() {
             VpnState.CONNECTED,
             "Conectado • ${config.sshHost}:${config.sshPort}"
         )
-        VpnStateBus.log("VPN", "Túnel TUN + DNS remoto activo — Ya puedes navegar", LogLevel.SUCCESS)
+        VpnStateBus.log("VPN", "Túnel TUN activo — Navegación y Juegos listos", LogLevel.SUCCESS)
         updateNotification("Conectado • ${config.sshHost}")
 
         startStatsLoop(socks, connectedAt)
 
-        // 5. Supervisar sesión hasta que caiga o el usuario desconecte
         while (shouldRun && sshManager.isConnected() && TProxyService.TProxyIsRunning()) {
             delay(1_500)
         }
@@ -229,7 +271,15 @@ class HcYoniVpnService : VpnService() {
             .setMtu(1500)
             .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
-            .addDnsServer("198.18.0.2")
+
+        if (config.useCustomDns) {
+            builder.addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
+            if (config.secondaryDns.isNotBlank()) {
+                builder.addDnsServer(config.secondaryDns)
+            }
+        } else {
+            builder.addDnsServer("198.18.0.2")
+        }
 
         if (config.enableIpv6) {
             builder.addAddress("fc00::1", 128)
@@ -265,8 +315,21 @@ class HcYoniVpnService : VpnService() {
             ?: throw IllegalStateException("Android denegó la creación de la interfaz TUN")
     }
 
-    private fun writeHevConfigFile(socksPort: Int, enableIpv6: Boolean): File {
-        val ipv6Line = if (enableIpv6) "\n              ipv6: 'fc00::1'" else ""
+    private fun writeHevConfigFile(socksPort: Int, config: VpnConfig): File {
+        val ipv6Line = if (config.enableIpv6) "\n              ipv6: 'fc00::1'" else ""
+        val mapDnsBlock = if (!config.useCustomDns) {
+            """
+            mapdns:
+              address: 198.18.0.2
+              port: 53
+              network: 100.64.0.0
+              netmask: 255.192.0.0
+              cache-size: 10000
+            """.trimIndent() + "\n"
+        } else {
+            ""
+        }
+
         val yaml = """
             tunnel:
               mtu: 1500
@@ -275,13 +338,7 @@ class HcYoniVpnService : VpnService() {
               port: $socksPort
               address: 127.0.0.1
               udp: 'udp'
-            mapdns:
-              address: 198.18.0.2
-              port: 53
-              network: 100.64.0.0
-              netmask: 255.192.0.0
-              cache-size: 10000
-            misc:
+            ${mapDnsBlock}misc:
               task-stack-size: 86016
               tcp-buffer-size: 65536
               connect-timeout: 15000
