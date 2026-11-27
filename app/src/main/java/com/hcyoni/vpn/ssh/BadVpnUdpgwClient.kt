@@ -168,7 +168,7 @@ class BadVpnUdpgwClient(
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastFailureMs.get() < 8_000L) {
+        if (now - lastFailureMs.get() < 2_000L) {
             return false
         }
 
@@ -192,7 +192,7 @@ class BadVpnUdpgwClient(
 
                 val chIn = DataInputStream(ch.inputStream)
                 val chOut = ch.outputStream
-                ch.connect(5_000)
+                ch.connect(4_000)
 
                 channel = ch
                 outputStream = chOut
@@ -255,7 +255,6 @@ class BadVpnUdpgwClient(
                     val udpPayloadSize = frameLen - payloadOffset
                     onBytesRx(udpPayloadSize.toLong())
 
-                    // Si el cliente usó IPv4 directa, reenviamos la IP/puerto reales de respuesta (Fullcone NAT)
                     val headerBytes = if (entry.atyp == 0x01 && !isReplyIpv6) {
                         byteArrayOf(
                             0x01,
@@ -298,7 +297,7 @@ class BadVpnUdpgwClient(
             val keepAliveFrame = byteArrayOf(0x03, 0x00, FLAG_KEEPALIVE.toByte(), 0x00, 0x00)
             try {
                 while (!closed && activeChannel.isConnected && !activeChannel.isClosed) {
-                    Thread.sleep(15_000)
+                    Thread.sleep(10_000)
                     if (closed || channel != activeChannel) break
                     synchronized(writeLock) {
                         outputStream?.write(keepAliveFrame)
