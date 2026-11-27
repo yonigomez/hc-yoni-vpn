@@ -47,12 +47,31 @@ data class VpnConfig(
     val useTls: Boolean = false,
     val dnsServer: String = "8.8.8.8",
     val secondaryDns: String = "1.1.1.1",
+    val useCustomDns: Boolean = false,
     val enableIpv6: Boolean = false,
     val autoReconnect: Boolean = true,
     val autoStartOnBoot: Boolean = false,
     val keepAliveIntervalSec: Int = 25,
-    val excludedApps: Set<String> = emptySet()
+    val udpgwEnabled: Boolean = true,
+    val udpgwPort: Int = 7300,
+    val useHwidWhenEmpty: Boolean = true,
+    val excludedApps: Set<String> = emptySet(),
+    // Opciones de bloqueo, seguridad y banner al guardar archivo .yoni
+    val lockPayload: Boolean = false,
+    val lockServerAndProxy: Boolean = false,
+    val lockCredentials: Boolean = false,
+    val mobileDataOnly: Boolean = false,
+    val blockRoot: Boolean = false,
+    val lockedHwid: String = "",
+    val expiryDateMillis: Long = 0L,
+    val configNote: String = "",
+    val hideServerBanner: Boolean = false
 ) {
+    fun hasAnyLock(): Boolean {
+        return lockPayload || lockServerAndProxy || lockCredentials ||
+            mobileDataOnly || blockRoot || lockedHwid.isNotBlank() || expiryDateMillis > 0L
+    }
+
     fun toJson(includeSecrets: Boolean = true): String {
         val obj = JSONObject()
         obj.put("profileName", profileName)
@@ -68,10 +87,24 @@ data class VpnConfig(
         obj.put("useTls", useTls)
         obj.put("dnsServer", dnsServer)
         obj.put("secondaryDns", secondaryDns)
+        obj.put("useCustomDns", useCustomDns)
         obj.put("enableIpv6", enableIpv6)
         obj.put("autoReconnect", autoReconnect)
         obj.put("autoStartOnBoot", autoStartOnBoot)
         obj.put("keepAliveIntervalSec", keepAliveIntervalSec)
+        obj.put("udpgwEnabled", udpgwEnabled)
+        obj.put("udpgwPort", udpgwPort)
+        obj.put("useHwidWhenEmpty", useHwidWhenEmpty)
+        obj.put("lockPayload", lockPayload)
+        obj.put("lockServerAndProxy", lockServerAndProxy)
+        obj.put("lockCredentials", lockCredentials)
+        obj.put("mobileDataOnly", mobileDataOnly)
+        obj.put("blockRoot", blockRoot)
+        obj.put("lockedHwid", lockedHwid)
+        obj.put("expiryDateMillis", expiryDateMillis)
+        obj.put("configNote", configNote)
+        obj.put("hideServerBanner", hideServerBanner)
+
         val arr = JSONArray()
         excludedApps.sorted().forEach { arr.put(it) }
         obj.put("excludedApps", arr)
@@ -106,11 +139,24 @@ data class VpnConfig(
                 useTls = obj.optBoolean("useTls", false),
                 dnsServer = obj.optString("dnsServer", "8.8.8.8").ifBlank { "8.8.8.8" },
                 secondaryDns = obj.optString("secondaryDns", "1.1.1.1").ifBlank { "1.1.1.1" },
+                useCustomDns = obj.optBoolean("useCustomDns", false),
                 enableIpv6 = obj.optBoolean("enableIpv6", false),
                 autoReconnect = obj.optBoolean("autoReconnect", true),
                 autoStartOnBoot = obj.optBoolean("autoStartOnBoot", false),
                 keepAliveIntervalSec = obj.optInt("keepAliveIntervalSec", 25).coerceIn(5, 120),
-                excludedApps = excluded
+                udpgwEnabled = obj.optBoolean("udpgwEnabled", true),
+                udpgwPort = obj.optInt("udpgwPort", 7300).coerceIn(1, 65535),
+                useHwidWhenEmpty = obj.optBoolean("useHwidWhenEmpty", true),
+                excludedApps = excluded,
+                lockPayload = obj.optBoolean("lockPayload", false),
+                lockServerAndProxy = obj.optBoolean("lockServerAndProxy", false),
+                lockCredentials = obj.optBoolean("lockCredentials", false),
+                mobileDataOnly = obj.optBoolean("mobileDataOnly", false),
+                blockRoot = obj.optBoolean("blockRoot", false),
+                lockedHwid = obj.optString("lockedHwid", "").trim(),
+                expiryDateMillis = obj.optLong("expiryDateMillis", 0L),
+                configNote = obj.optString("configNote", ""),
+                hideServerBanner = obj.optBoolean("hideServerBanner", false)
             )
         }
     }
