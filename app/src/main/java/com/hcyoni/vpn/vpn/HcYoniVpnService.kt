@@ -8,8 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -31,6 +29,7 @@ import com.hcyoni.vpn.ssh.LocalSocks5Server
 import com.hcyoni.vpn.ssh.SshTunnelManager
 import com.hcyoni.vpn.ssh.WifiShareProxyServer
 import com.hcyoni.vpn.util.SecurityAndDeviceHelper
+import hev.htproxy.TProxyService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,12 +40,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.IOException
 import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class HcYoniVpnService : VpnService() {
 
@@ -56,8 +53,6 @@ class HcYoniVpnService : VpnService() {
     private var socksServer: LocalSocks5Server? = null
     private var wifiShareServer: WifiShareProxyServer? = null
     private var tunInterface: ParcelFileDescriptor? = null
-    private var tun2socksProcess: Process? = null
-
     private var engineJob: Job? = null
     private var statsJob: Job? = null
 
@@ -272,141 +267,58 @@ class HcYoniVpnService : VpnService() {
         val tun = establishTunInterface(config)
         tunInterface = tun
 
-        val proc = launchBadVpnTun2Socks(socksPort, tun, config)
+        val hevLogFile = File(filesDir, "hev.log")
+        try {
+            if (hevLogFile.exists()) hevLogFile.delete()
+        } catch (_: Exception) {
+        }
+
+        val yamlFile = writeHevConfigFile(socksPort, config, hevLogFile.absolutePath)
+        val started = TProxyService.TProxyStartService(yamlFile.absolutePath, tun.fd)
+        if (!started) {
+            throw IllegalStateException("No se pudo iniciar el núcleo nativo hev-socks5-tunnel")
+        }
+
+        var nativeUp = false
+        for (i in 0 until 15) {
+            if (TProxyService.TProxyIsRunning()) {
+                nativeUp = true
+                break
+            }
+            delay(100)
+        }
+        if (!nativeUp) {
+            val errDetail = if (hevLogFile.exists()) hevLogFile.readText().trim().takeLast(250) else ""
+            throw IllegalStateException(
+                if (errDetail.isNotEmpty()) "Error núcleo TUN: $errDetail"
+                else "El núcleo TUN se cerró al iniciar"
+            )
+        }
 
         val connectedAt = System.currentTimeMillis()
         val label = visibleServerLabel(config)
         VpnStateBus.updateState(VpnState.CONNECTED, "Conectado • $label")
-        VpnStateBus.log("VPN", "Motor badvpn-tun2socks activo — Navegación y Juegos listos", LogLevel.SUCCESS)
+        VpnStateBus.log("VPN", "Túnel TUN activo — Navegación y Juegos listos", LogLevel.SUCCESS)
         updateNotification("Conectado (0h 00m) • $label")
 
         startStatsLoop(socks, connectedAt)
 
-        while (shouldRun && sshManager.isConnected() && proc.isAlive) {
+        while (shouldRun && sshManager.isConnected() && TProxyService.TProxyIsRunning()) {
             delay(1_500)
         }
 
         if (shouldRun) {
             val sshAlive = sshManager.isConnected()
-            val tunAlive = proc.isAlive
+            val tunAlive = try {
+                TProxyService.TProxyIsRunning()
+            } catch (_: Throwable) {
+                false
+            }
             VpnStateBus.log("VPN", "Sesión finalizada (SSH=$sshAlive, TUN=$tunAlive)", LogLevel.WARN)
         }
 
         statsJob?.cancel()
         teardownPipeline()
-    }
-
-    private suspend fun launchBadVpnTun2Socks(
-        socksPort: Int,
-        tun: ParcelFileDescriptor,
-        config: VpnConfig
-    ): Process {
-        val bin = File(applicationInfo.nativeLibraryDir, "libtun2socks.so")
-        if (!bin.exists()) {
-            throw IllegalStateException("Falta el binario nativo libtun2socks.so en el APK")
-        }
-
-        val sockFile = File(filesDir, "tun_sock")
-        val sockPath = sockFile.absolutePath
-
-        // Intentamos primero sin --netif-netmask (formato shadowsocks/badvpn) y si falla, con --netif-netmask
-        val cmdNoMask = mutableListOf(
-            bin.absolutePath,
-            "--netif-ipaddr", "198.18.0.2",
-            "--socks-server-addr", "127.0.0.1:$socksPort",
-            "--tunmtu", "1500",
-            "--sock-path", sockPath,
-            "--loglevel", "warning",
-            "--enable-udprelay"
-        )
-        if (config.enableIpv6) {
-            cmdNoMask.addAll(listOf("--netif-ip6addr", "fc00::2"))
-        }
-
-        var proc = startAndSendFd(cmdNoMask, sockFile, tun)
-        if (proc == null) {
-            val cmdWithMask = mutableListOf(
-                bin.absolutePath,
-                "--netif-ipaddr", "198.18.0.2",
-                "--netif-netmask", "255.255.255.0",
-                "--socks-server-addr", "127.0.0.1:$socksPort",
-                "--tunmtu", "1500",
-                "--sock-path", sockPath,
-                "--loglevel", "warning",
-                "--enable-udprelay"
-            )
-            if (config.enableIpv6) {
-                cmdWithMask.addAll(listOf("--netif-ip6addr", "fc00::2"))
-            }
-            proc = startAndSendFd(cmdWithMask, sockFile, tun)
-        }
-
-        return proc ?: throw IllegalStateException("El motor nativo badvpn-tun2socks se detuvo al iniciar")
-    }
-
-    private suspend fun startAndSendFd(
-        cmd: List<String>,
-        sockFile: File,
-        tun: ParcelFileDescriptor
-    ): Process? {
-        try {
-            if (sockFile.exists()) sockFile.delete()
-        } catch (_: Exception) {
-        }
-
-        val process = ProcessBuilder(cmd)
-            .directory(filesDir)
-            .redirectErrorStream(true)
-            .start()
-        tun2socksProcess = process
-
-        val logLines = java.util.Collections.synchronizedList(mutableListOf<String>())
-        serviceScope.launch {
-            try {
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    val t = line.trim()
-                    if (t.isNotEmpty()) {
-                        if (logLines.size < 8) logLines.add(t)
-                        if (t.contains("ERROR", ignoreCase = true) || t.contains("exit", ignoreCase = true)) {
-                            VpnStateBus.log("TUN2SOCKS", t.take(160), LogLevel.WARN)
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-            }
-        }
-
-        // tun2socks crea el socket UNIX --sock-path y nuestra app le envía el tun.fileDescriptor como cliente
-        var fdSent = false
-        for (attempt in 0 until 20) {
-            if (!process.isAlive) break
-            try {
-                val ls = LocalSocket()
-                ls.connect(LocalSocketAddress(sockFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
-                ls.setFileDescriptorsForSend(arrayOf(tun.fileDescriptor))
-                ls.outputStream.write(42)
-                ls.outputStream.flush()
-                ls.close()
-                fdSent = true
-                break
-            } catch (_: IOException) {
-                delay(100)
-            }
-        }
-
-        if (!process.isAlive || !fdSent) {
-            if (logLines.isNotEmpty()) {
-                VpnStateBus.log("TUN2SOCKS", logLines.first().take(180), LogLevel.WARN)
-            }
-            try {
-                process.destroyForcibly()
-            } catch (_: Exception) {
-            }
-            tun2socksProcess = null
-            return null
-        }
-
-        return process
     }
 
     private fun applyWifiShareState(config: VpnConfig) {
@@ -444,8 +356,8 @@ class HcYoniVpnService : VpnService() {
     private fun establishTunInterface(config: VpnConfig): ParcelFileDescriptor {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
-            .setMtu(1500)
-            .addAddress("198.18.0.1", 30)
+            .setMtu(1420)
+            .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
             .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
 
@@ -454,7 +366,7 @@ class HcYoniVpnService : VpnService() {
         }
 
         if (config.enableIpv6) {
-            builder.addAddress("fc00::1", 64)
+            builder.addAddress("fc00::1", 128)
             builder.addRoute("::", 0)
         }
 
@@ -485,6 +397,35 @@ class HcYoniVpnService : VpnService() {
 
         return builder.establish()
             ?: throw IllegalStateException("Android denegó la creación de la interfaz TUN")
+    }
+
+    private fun writeHevConfigFile(socksPort: Int, config: VpnConfig, logPath: String): File {
+        val sb = StringBuilder()
+        sb.append("tunnel:\n")
+        sb.append("  mtu: 1420\n")
+        sb.append("  ipv4: 198.18.0.1\n")
+        if (config.enableIpv6) {
+            sb.append("  ipv6: 'fc00::1'\n")
+        }
+        sb.append("socks5:\n")
+        sb.append("  port: ").append(socksPort).append('\n')
+        sb.append("  address: 127.0.0.1\n")
+        sb.append("  udp: 'udp'\n")
+        sb.append("misc:\n")
+        sb.append("  task-stack-size: 86016\n")
+        sb.append("  tcp-buffer-size: 65536\n")
+        sb.append("  udp-recv-buffer-size: 524288\n")
+        sb.append("  udp-copy-buffer-nums: 32\n")
+        sb.append("  max-session-count: 256\n")
+        sb.append("  connect-timeout: 15000\n")
+        sb.append("  tcp-read-write-timeout: 180000\n")
+        sb.append("  udp-read-write-timeout: 45000\n")
+        sb.append("  log-file: '").append(logPath).append("'\n")
+        sb.append("  log-level: warn\n")
+
+        val file = File(filesDir, "hev-socks5-tunnel.yaml")
+        file.writeText(sb.toString())
+        return file
     }
 
     private fun startStatsLoop(socks: LocalSocks5Server, connectedSinceMs: Long) {
@@ -550,18 +491,16 @@ class HcYoniVpnService : VpnService() {
 
     private fun teardownPipeline() {
         try {
+            if (TProxyService.TProxyIsRunning()) {
+                TProxyService.TProxyStopService()
+            }
+        } catch (_: Throwable) {
+        }
+        try {
             wifiShareServer?.stop()
         } catch (_: Exception) {
         }
         wifiShareServer = null
-
-        try {
-            tun2socksProcess?.destroy()
-            tun2socksProcess?.waitFor(300, TimeUnit.MILLISECONDS)
-            tun2socksProcess?.destroyForcibly()
-        } catch (_: Exception) {
-        }
-        tun2socksProcess = null
 
         try {
             tunInterface?.close()
