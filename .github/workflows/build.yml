@@ -1,0 +1,68 @@
+name: Build hc Yoni APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK 36 and Build Tools
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || ls -d "${ANDROID_HOME}/cmdline-tools/"*"/bin/sdkmanager" 2>/dev/null | head -n 1)
+          mkdir -p "${ANDROID_HOME}/licenses"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build native hev-socks5-tunnel (16KB page aligned)
+        run: |
+          NDK_DIR="${ANDROID_NDK_HOME:-}"
+          if [ -z "$NDK_DIR" ] || [ ! -x "$NDK_DIR/ndk-build" ]; then
+            NDK_DIR=$(ls -d "${ANDROID_HOME}/ndk/"* 2>/dev/null | sort -V | tail -n 1)
+          fi
+          if [ -z "$NDK_DIR" ] || [ ! -x "$NDK_DIR/ndk-build" ]; then
+            SDKMANAGER=$(command -v sdkmanager || ls -d "${ANDROID_HOME}/cmdline-tools/"*"/bin/sdkmanager" 2>/dev/null | head -n 1)
+            yes | "$SDKMANAGER" "ndk;28.2.13676358"
+            NDK_DIR="${ANDROID_HOME}/ndk/28.2.13676358"
+          fi
+          echo "Usando Android NDK: $NDK_DIR"
+          rm -rf /tmp/hev-build
+          mkdir -p /tmp/hev-build
+          git clone --recursive --branch 2.20.0 https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-build/jni
+          cd /tmp/hev-build
+          "$NDK_DIR/ndk-build" -j$(nproc) APP_PLATFORM=android-26 APP_LDFLAGS="-Wl,-z,max-page-size=16384"
+          mkdir -p "${GITHUB_WORKSPACE}/app/src/main/jniLibs"
+          cp -r libs/* "${GITHUB_WORKSPACE}/app/src/main/jniLibs/"
+          ls -la "${GITHUB_WORKSPACE}/app/src/main/jniLibs/"*
+
+      - name: Set up Gradle 9.6.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Build hc Yoni APK
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk hc-yoni.apk
+
+      - name: Upload APK direct download
+        uses: actions/upload-artifact@v7
+        with:
+          name: hc-yoni-apk
+          path: hc-yoni.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
