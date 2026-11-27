@@ -12,8 +12,11 @@ import java.net.DatagramSocket
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.SocketAddress
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -36,15 +39,17 @@ class BadVpnUdpgwClient(
         val atyp: Int,
         val udpSocket: DatagramSocket,
         val clientAddr: SocketAddress,
-        val socksAddrHeader: ByteArray
+        val socksAddrHeader: ByteArray,
+        val needsRebind: AtomicBoolean
     )
 
     private val lock = Any()
-    private val writeLock = Any()
     private val workerExecutor = Executors.newCachedThreadPool()
+    private val sendQueue = ArrayBlockingQueue<ByteArray>(512)
 
     private val flowsByConId = ConcurrentHashMap<Int, FlowEntry>()
     private val conidByKey = ConcurrentHashMap<FlowKey, Int>()
+    private val freeConIds = ConcurrentLinkedDeque<Int>()
     private val nextConId = AtomicInteger(1)
 
     @Volatile
@@ -54,11 +59,13 @@ class BadVpnUdpgwClient(
     @Volatile
     private var outputStream: OutputStream? = null
 
+    private val senderStarted = AtomicBoolean(false)
     private val loggedConnected = AtomicBoolean(false)
     private val loggedFirstReply = AtomicBoolean(false)
     private val lastFailureMs = AtomicLong(0L)
 
     fun prewarmAsync() {
+        startSenderLoopOnce()
         workerExecutor.execute {
             if (!closed) {
                 ensureConnected(silentIfFail = true)
@@ -76,12 +83,14 @@ class BadVpnUdpgwClient(
         payload: ByteArray
     ) {
         if (closed || payload.isEmpty()) return
+        startSenderLoopOnce()
 
         val ipKey = dstAddress.hostAddress ?: return
         val key = FlowKey(clientAddr, ipKey, dstPort)
-        val conid = conidByKey[key] ?: allocateFlow(key, atyp, udpSocket, clientAddr, socksAddrHeader)
-
-        if (!ensureConnected(silentIfFail = false)) return
+        var entry = conidByKey[key]?.let { flowsByConId[it] }
+        if (entry == null) {
+            entry = allocateFlow(key, atyp, udpSocket, clientAddr, socksAddrHeader)
+        }
 
         val isIpv6 = dstAddress is Inet6Address
         val addrBytes = dstAddress.address
@@ -89,34 +98,38 @@ class BadVpnUdpgwClient(
         val innerLen = 3 + addrLen + payload.size
         if (innerLen > 32_760) return
 
+        var flags = if (isIpv6) FLAG_IPV6 else 0
+        if (entry.needsRebind.compareAndSet(true, false)) {
+            flags = flags or FLAG_REBIND
+        }
+
         val frame = ByteArray(2 + innerLen)
         frame[0] = (innerLen and 0xFF).toByte()
         frame[1] = ((innerLen ushr 8) and 0xFF).toByte()
-        frame[2] = (if (isIpv6) FLAG_IPV6 else 0).toByte()
-        frame[3] = (conid and 0xFF).toByte()
-        frame[4] = ((conid ushr 8) and 0xFF).toByte()
+        frame[2] = flags.toByte()
+        frame[3] = (entry.conid and 0xFF).toByte()
+        frame[4] = ((entry.conid ushr 8) and 0xFF).toByte()
         System.arraycopy(addrBytes, 0, frame, 5, addrBytes.size)
         val portOffset = 5 + addrBytes.size
         frame[portOffset] = ((dstPort ushr 8) and 0xFF).toByte()
         frame[portOffset + 1] = (dstPort and 0xFF).toByte()
         System.arraycopy(payload, 0, frame, portOffset + 2, payload.size)
 
-        try {
-            synchronized(writeLock) {
-                val out = outputStream ?: return
-                out.write(frame)
-                out.flush()
-            }
-            onBytesTx(payload.size.toLong())
-        } catch (_: IOException) {
-            resetConnection()
+        onBytesTx(payload.size.toLong())
+
+        // Si la cola se llena por un microcorte de 4G, descartamos el paquete viejo para no generar 999+
+        if (!sendQueue.offer(frame)) {
+            sendQueue.poll()
+            sendQueue.offer(frame)
         }
     }
 
     fun unregisterSocket(udpSocket: DatagramSocket) {
         val toRemove = flowsByConId.values.filter { it.udpSocket == udpSocket }
         for (entry in toRemove) {
-            flowsByConId.remove(entry.conid)
+            if (flowsByConId.remove(entry.conid) != null) {
+                freeConIds.offerLast(entry.conid)
+            }
         }
         val keysToRemove = conidByKey.entries
             .filter { flowsByConId[it.value] == null }
@@ -128,12 +141,65 @@ class BadVpnUdpgwClient(
 
     fun close() {
         closed = true
+        sendQueue.clear()
         resetConnection()
         flowsByConId.clear()
         conidByKey.clear()
+        freeConIds.clear()
         try {
             workerExecutor.shutdownNow()
         } catch (_: Exception) {
+        }
+    }
+
+    private fun startSenderLoopOnce() {
+        if (!senderStarted.compareAndSet(false, true)) return
+        workerExecutor.execute {
+            try {
+                Thread.currentThread().priority = Thread.MAX_PRIORITY
+            } catch (_: Exception) {
+            }
+            var lastKeepAliveMs = System.currentTimeMillis()
+            val keepAliveFrame = byteArrayOf(0x03, 0x00, FLAG_KEEPALIVE.toByte(), 0x00, 0x00)
+
+            while (!closed) {
+                try {
+                    val frame = sendQueue.poll(2, TimeUnit.SECONDS)
+                    if (closed) break
+
+                    if (frame != null) {
+                        if (!ensureConnected(silentIfFail = false)) continue
+                        val out = outputStream
+                        if (out != null) {
+                            out.write(frame)
+                            // Enviar en lote todo lo que ya esté listo en cola antes de hacer flush
+                            var batched = 0
+                            while (batched < 16) {
+                                val next = sendQueue.poll() ?: break
+                                out.write(next)
+                                batched++
+                            }
+                            out.flush()
+                            lastKeepAliveMs = System.currentTimeMillis()
+                        }
+                    } else {
+                        val now = System.currentTimeMillis()
+                        val ch = channel
+                        if (ch != null && ch.isConnected && !ch.isClosed && now - lastKeepAliveMs >= 10_000L) {
+                            outputStream?.let { out ->
+                                out.write(keepAliveFrame)
+                                out.flush()
+                                lastKeepAliveMs = now
+                            }
+                        }
+                    }
+                } catch (_: InterruptedException) {
+                    break
+                } catch (_: IOException) {
+                    resetConnection()
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -143,21 +209,38 @@ class BadVpnUdpgwClient(
         udpSocket: DatagramSocket,
         clientAddr: SocketAddress,
         socksAddrHeader: ByteArray
-    ): Int {
+    ): FlowEntry {
         synchronized(flowsByConId) {
-            conidByKey[key]?.let { return it }
-            repeat(65_000) {
-                val id = (Math.floorMod(nextConId.getAndIncrement(), 65_534)) + 1
+            conidByKey[key]?.let { existingId ->
+                flowsByConId[existingId]?.let { return it }
+            }
+
+            // Reutilizar un slot cerrado con REBIND para nunca superar --max-connections-for-client en la VPS
+            val recycled = freeConIds.pollFirst()
+            if (recycled != null) {
+                val entry = FlowEntry(recycled, atyp, udpSocket, clientAddr, socksAddrHeader, AtomicBoolean(true))
+                flowsByConId[recycled] = entry
+                conidByKey[key] = recycled
+                return entry
+            }
+
+            var chosen = 1
+            repeat(64) {
+                val id = (Math.floorMod(nextConId.getAndIncrement(), 64)) + 1
                 if (!flowsByConId.containsKey(id)) {
-                    flowsByConId[id] = FlowEntry(id, atyp, udpSocket, clientAddr, socksAddrHeader)
-                    conidByKey[key] = id
-                    return id
+                    chosen = id
+                    val entry = FlowEntry(chosen, atyp, udpSocket, clientAddr, socksAddrHeader, AtomicBoolean(false))
+                    flowsByConId[chosen] = entry
+                    conidByKey[key] = chosen
+                    return entry
                 }
             }
-            val fallback = (Math.floorMod(nextConId.getAndIncrement(), 65_534)) + 1
-            flowsByConId[fallback] = FlowEntry(fallback, atyp, udpSocket, clientAddr, socksAddrHeader)
-            conidByKey[key] = fallback
-            return fallback
+
+            chosen = (Math.floorMod(nextConId.getAndIncrement(), 64)) + 1
+            val entry = FlowEntry(chosen, atyp, udpSocket, clientAddr, socksAddrHeader, AtomicBoolean(true))
+            flowsByConId[chosen] = entry
+            conidByKey[key] = chosen
+            return entry
         }
     }
 
@@ -201,7 +284,7 @@ class BadVpnUdpgwClient(
                     onLog("Motor Juegos / UDP listo (BadVPN UDPGW puerto $udpgwPort)", LogLevel.SUCCESS)
                 }
 
-                startReaderAndKeepalive(ch, chIn)
+                startReaderThread(ch, chIn)
                 return true
             } catch (e: Exception) {
                 val prev = lastFailureMs.getAndSet(System.currentTimeMillis())
@@ -222,8 +305,12 @@ class BadVpnUdpgwClient(
         }
     }
 
-    private fun startReaderAndKeepalive(activeChannel: ChannelDirectTCPIP, input: DataInputStream) {
+    private fun startReaderThread(activeChannel: ChannelDirectTCPIP, input: DataInputStream) {
         workerExecutor.execute {
+            try {
+                Thread.currentThread().priority = Thread.MAX_PRIORITY
+            } catch (_: Exception) {
+            }
             try {
                 while (!closed && activeChannel.isConnected && !activeChannel.isClosed) {
                     val b0 = input.read()
@@ -292,22 +379,6 @@ class BadVpnUdpgwClient(
                 }
             }
         }
-
-        workerExecutor.execute {
-            val keepAliveFrame = byteArrayOf(0x03, 0x00, FLAG_KEEPALIVE.toByte(), 0x00, 0x00)
-            try {
-                while (!closed && activeChannel.isConnected && !activeChannel.isClosed) {
-                    Thread.sleep(10_000)
-                    if (closed || channel != activeChannel) break
-                    synchronized(writeLock) {
-                        outputStream?.write(keepAliveFrame)
-                        outputStream?.flush()
-                    }
-                }
-            } catch (_: InterruptedException) {
-            } catch (_: Exception) {
-            }
-        }
     }
 
     private fun resetConnection() {
@@ -323,6 +394,7 @@ class BadVpnUdpgwClient(
 
     companion object {
         private const val FLAG_KEEPALIVE = 1 shl 0
+        private const val FLAG_REBIND = 1 shl 1
         private const val FLAG_IPV6 = 1 shl 3
     }
 }
