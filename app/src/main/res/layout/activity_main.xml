@@ -14,15 +14,16 @@
         android:background="@color/bg_primary"
         android:orientation="vertical">
 
-        <!-- Barra superior -->
+        <!-- Barra superior futurista -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:background="@drawable/bg_cyber_header"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingHorizontal="12dp"
             android:paddingTop="10dp"
-            android:paddingBottom="6dp">
+            android:paddingBottom="8dp">
 
             <ImageButton
                 android:id="@+id/btnOpenDrawer"
@@ -43,205 +44,61 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:letterSpacing="0.04"
+                    android:letterSpacing="0.06"
                     android:text="@string/app_name"
                     android:textColor="@color/text_primary"
-                    android:textSize="21sp"
+                    android:textSize="22sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="SSH Directo • Payload • Juegos 7300"
+                    android:letterSpacing="0.03"
+                    android:text="TÚNEL SSH • PAYLOAD • JUEGOS 7300"
                     android:textColor="@color/accent_cyan"
-                    android:textSize="11sp" />
+                    android:textSize="10.5sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <ImageButton
                 android:id="@+id/btnImportConfig"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Importar archivo .yoni"
-                android:padding="9dp"
+                android:padding="8dp"
                 android:src="@drawable/ic_download_file" />
 
             <ImageButton
                 android:id="@+id/btnExportConfig"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Guardar archivo encriptado"
-                android:padding="9dp"
+                android:padding="8dp"
                 android:src="@drawable/ic_upload_file" />
 
             <ImageButton
                 android:id="@+id/btnClearConfig"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Borrar configuración"
-                android:padding="9dp"
+                android:padding="8dp"
                 android:src="@drawable/ic_delete" />
         </LinearLayout>
 
-        <!-- Tarjeta de Estado, Horas y Botón Conectar -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginHorizontal="14dp"
-            android:layout_marginBottom="8dp"
-            app:cardBackgroundColor="@color/bg_surface"
-            app:cardCornerRadius="20dp"
-            app:strokeColor="@color/stroke_subtle"
-            app:strokeWidth="1dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="14dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/badgeStatus"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_status_badge"
-                        android:paddingHorizontal="12dp"
-                        android:paddingVertical="4dp"
-                        android:text="@string/status_disconnected"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLockedBadge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:text="🔒 PROTEGIDO"
-                        android:textColor="@color/accent_amber"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:visibility="gone" />
-
-                    <View
-                        android:layout_width="0dp"
-                        android:layout_height="1dp"
-                        android:layout_weight="1" />
-
-                    <TextView
-                        android:id="@+id/tvDuration"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
-                        android:text="⏱ 0h 00m 00s"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvConnectionSubtitle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:ellipsize="end"
-                    android:maxLines="2"
-                    android:text="Listo para conectar"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12.5sp" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/tvDownSpeed"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:fontFamily="monospace"
-                        android:text="↓ 0 B/s"
-                        android:textColor="@color/accent_green"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvUpSpeed"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:fontFamily="monospace"
-                        android:gravity="center"
-                        android:text="↑ 0 B/s"
-                        android:textColor="@color/accent_cyan"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvTotalTraffic"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:fontFamily="monospace"
-                        android:gravity="end"
-                        android:text="Total: 0 B"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
-                </LinearLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnConnectToggle"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/btn_connect"
-                    android:textColor="@color/bg_primary"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/accent_cyan"
-                    app:cornerRadius="15dp" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Botón compacto para volver a mostrar el banner cuando está oculto -->
-        <TextView
-            android:id="@+id/btnShowBannerPill"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginBottom="8dp"
-            android:background="@drawable/bg_status_badge"
-            android:paddingHorizontal="14dp"
-            android:paddingVertical="5dp"
-            android:text="📢 Mostrar aviso / banner"
-            android:textColor="@color/accent_cyan"
-            android:textSize="12sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <!-- Tarjeta de Banner HTML / Aviso del Servidor o Archivo -->
+        <!-- Tarjeta Cyber-Glass de Estado, Horas y Botón Conectar -->
         <LinearLayout
-            android:id="@+id/cardBanner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginHorizontal="14dp"
-            android:layout_marginBottom="8dp"
-            android:background="@drawable/bg_banner_card"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_cyber_surface"
+            android:elevation="6dp"
             android:orientation="vertical"
-            android:paddingHorizontal="10dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="6dp"
-            android:visibility="gone">
+            android:padding="15dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -250,46 +107,120 @@
                 android:orientation="horizontal">
 
                 <TextView
-                    android:id="@+id/tvBannerTitle"
-                    android:layout_width="0dp"
+                    android:id="@+id/badgeStatus"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="📢 AVISO DEL SERVIDOR"
-                    android:textColor="@color/accent_cyan"
-                    android:textSize="11.5sp"
+                    android:background="@drawable/bg_status_badge"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="4dp"
+                    android:text="@string/status_disconnected"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/btnExpandBanner"
+                    android:id="@+id/tvLockedBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="2dp"
-                    android:text="Ampliar"
+                    android:layout_marginStart="8dp"
+                    android:text="🔒 PROTEGIDO"
+                    android:textColor="@color/accent_amber"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/tvDuration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text="⏱ 0h 00m 00s"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvConnectionSubtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Listo para conectar"
+                android:textColor="@color/text_secondary"
+                android:textSize="12.5sp" />
+
+            <!-- Medidores de velocidad en 1 línea nítida -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvDownSpeed"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="0.95"
+                    android:ellipsize="end"
+                    android:fontFamily="monospace"
+                    android:maxLines="1"
+                    android:text="↓ 0 B/s"
                     android:textColor="@color/accent_green"
                     android:textSize="11.5sp"
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/btnHideBanner"
-                    android:layout_width="wrap_content"
+                    android:id="@+id/tvUpSpeed"
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="2dp"
-                    android:text="Ocultar"
-                    android:textColor="@color/accent_amber"
+                    android:layout_weight="0.95"
+                    android:ellipsize="end"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:text="↑ 0 B/s"
+                    android:textColor="@color/accent_cyan"
                     android:textSize="11.5sp"
                     android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvTotalTraffic"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1.15"
+                    android:ellipsize="end"
+                    android:fontFamily="monospace"
+                    android:gravity="end"
+                    android:maxLines="1"
+                    android:text="Total: 0 B"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11.5sp" />
             </LinearLayout>
 
-            <WebView
-                android:id="@+id/webBannerPreview"
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnConnectToggle"
                 android:layout_width="match_parent"
-                android:layout_height="155dp"
-                android:layout_marginTop="4dp" />
+                android:layout_height="52dp"
+                android:layout_marginTop="12dp"
+                android:elevation="6dp"
+                android:letterSpacing="0.06"
+                android:text="@string/btn_connect"
+                android:textColor="@color/bg_primary"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/accent_cyan"
+                app:cornerRadius="16dp" />
         </LinearLayout>
 
-        <!-- Pestañas deslizables -->
+        <!-- Pestañas deslizables (Banner aparece a la izquierda solo cuando existe) -->
         <com.google.android.material.tabs.TabLayout
             android:id="@+id/tabLayout"
             android:layout_width="match_parent"
@@ -309,7 +240,7 @@
             android:layout_weight="1" />
     </LinearLayout>
 
-    <!-- MENÚ LATERAL COMPLETO -->
+    <!-- MENÚ LATERAL -->
     <ScrollView
         android:id="@+id/drawerPanel"
         android:layout_width="310dp"
@@ -331,22 +262,29 @@
                 android:orientation="vertical"
                 android:paddingBottom="12dp">
 
-                <ImageView
-                    android:id="@+id/ivDrawerLogo"
-                    android:layout_width="94dp"
-                    android:layout_height="94dp"
-                    android:contentDescription="Logo HC YONI"
-                    android:scaleType="centerCrop"
-                    android:src="@drawable/ic_yoni_logo" />
+                <FrameLayout
+                    android:layout_width="102dp"
+                    android:layout_height="102dp"
+                    android:background="@drawable/bg_logo_frame"
+                    android:padding="3dp">
+
+                    <ImageView
+                        android:id="@+id/ivDrawerLogo"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:contentDescription="Logo HC YONI"
+                        android:scaleType="centerCrop"
+                        android:src="@drawable/ic_yoni_logo" />
+                </FrameLayout>
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:letterSpacing="0.05"
+                    android:layout_marginTop="10dp"
+                    android:letterSpacing="0.06"
                     android:text="HC YONI"
                     android:textColor="@color/text_primary"
-                    android:textSize="20sp"
+                    android:textSize="21sp"
                     android:textStyle="bold" />
 
                 <TextView
