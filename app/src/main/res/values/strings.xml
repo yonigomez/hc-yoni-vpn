@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">hc Yoni</string>
-    <string name="vpn_channel_name">Servicio VPN hc Yoni</string>
+    <string name="app_name">HC YONI</string>
+    <string name="vpn_channel_name">Servicio VPN HC YONI</string>
     <string name="vpn_channel_desc">Mantiene activo el túnel SSH y evita cierres en segundo plano</string>
     <string name="status_disconnected">DESCONECTADO</string>
     <string name="status_connecting">CONECTANDO...</string>
