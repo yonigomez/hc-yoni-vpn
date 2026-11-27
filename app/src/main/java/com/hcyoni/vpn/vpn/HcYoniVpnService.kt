@@ -128,6 +128,14 @@ class HcYoniVpnService : VpnService() {
         super.onDestroy()
     }
 
+    private fun visibleServerLabel(config: VpnConfig): String {
+        return if (config.lockServerAndProxy) {
+            config.profileName.ifBlank { "Servidor protegido" }
+        } else {
+            "${config.sshHost}:${config.sshPort}"
+        }
+    }
+
     private fun validateSecurityConstraints(config: VpnConfig): String? {
         if (config.sshHost.isBlank()) {
             return "Configura tu servidor SSH primero"
@@ -168,9 +176,10 @@ class HcYoniVpnService : VpnService() {
                 }
 
                 attempt++
+                val serverLabel = visibleServerLabel(cfg)
                 val stateLabel = if (attempt == 1) VpnState.CONNECTING else VpnState.RECONNECTING
                 val statusText = if (attempt == 1) {
-                    "Conectando a ${cfg.sshHost}:${cfg.sshPort}..."
+                    "Conectando a $serverLabel..."
                 } else {
                     "Reconectando túnel (intento #$attempt)..."
                 }
@@ -214,11 +223,8 @@ class HcYoniVpnService : VpnService() {
         }
 
         val myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
-
-        // 1. Conectar TCP + Payload + SSH2
         sshManager.connect(config, myHwid, protector)
 
-        // 2. Iniciar servidor SOCKS5 local + BadVPN UDPGW (puerto 7300)
         val socks = LocalSocks5Server(
             sessionProvider = { sshManager.session },
             dnsPrimary = config.dnsServer,
@@ -226,21 +232,20 @@ class HcYoniVpnService : VpnService() {
             enableIpv6 = config.enableIpv6,
             udpgwEnabled = config.udpgwEnabled,
             udpgwPort = config.udpgwPort,
+            hideServerDetails = config.lockServerAndProxy,
             onLog = { msg, level -> VpnStateBus.log("SOCKS5", msg, level) }
         )
         val socksPort = socks.start()
         socksServer = socks
         VpnStateBus.log(
             "SOCKS5",
-            "Proxy local 127.0.0.1:$socksPort (UDPGW Juegos: ${if (config.udpgwEnabled) config.udpgwPort else "Desactivado"})",
+            "Proxy local activo (Juegos UDPGW: ${if (config.udpgwEnabled) config.udpgwPort else "Desactivado"})",
             LogLevel.INFO
         )
 
-        // 3. Crear interfaz TUN de Android
         val tun = establishTunInterface(config)
         tunInterface = tun
 
-        // 4. Escribir YAML exactamente alineado e iniciar hev-socks5-tunnel
         val hevLogFile = File(filesDir, "hev.log")
         try {
             if (hevLogFile.exists()) hevLogFile.delete()
@@ -253,7 +258,6 @@ class HcYoniVpnService : VpnService() {
             throw IllegalStateException("No se pudo iniciar el núcleo nativo hev-socks5-tunnel")
         }
 
-        // Dar hasta 1.5s al hilo nativo C para confirmar inicio sin falsos negativos por carrera
         var nativeUp = false
         for (i in 0 until 15) {
             if (TProxyService.TProxyIsRunning()) {
@@ -271,12 +275,10 @@ class HcYoniVpnService : VpnService() {
         }
 
         val connectedAt = System.currentTimeMillis()
-        VpnStateBus.updateState(
-            VpnState.CONNECTED,
-            "Conectado • ${config.sshHost}:${config.sshPort}"
-        )
+        val label = visibleServerLabel(config)
+        VpnStateBus.updateState(VpnState.CONNECTED, "Conectado • $label")
         VpnStateBus.log("VPN", "Túnel TUN activo — Navegación y Juegos listos", LogLevel.SUCCESS)
-        updateNotification("Conectado (0h 00m) • ${config.sshHost}")
+        updateNotification("Conectado (0h 00m) • $label")
 
         startStatsLoop(socks, connectedAt)
 
