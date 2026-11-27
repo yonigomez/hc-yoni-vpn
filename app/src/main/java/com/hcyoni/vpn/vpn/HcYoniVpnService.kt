@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.Network
@@ -58,9 +57,6 @@ class HcYoniVpnService : VpnService() {
     private var wifiShareServer: WifiShareProxyServer? = null
     private var tunInterface: ParcelFileDescriptor? = null
     private var tun2socksProcess: Process? = null
-    private var tunLocalServer: LocalServerSocket? = null
-    private var tunBindSocket: LocalSocket? = null
-    private var fdServerJob: Job? = null
 
     private var engineJob: Job? = null
     private var statsJob: Job? = null
@@ -277,10 +273,6 @@ class HcYoniVpnService : VpnService() {
         tunInterface = tun
 
         val proc = launchBadVpnTun2Socks(socksPort, tun, config)
-        delay(400)
-        if (!proc.isAlive) {
-            throw IllegalStateException("El motor nativo badvpn-tun2socks se detuvo al iniciar")
-        }
 
         val connectedAt = System.currentTimeMillis()
         val label = visibleServerLabel(config)
@@ -304,7 +296,7 @@ class HcYoniVpnService : VpnService() {
         teardownPipeline()
     }
 
-    private fun launchBadVpnTun2Socks(
+    private suspend fun launchBadVpnTun2Socks(
         socksPort: Int,
         tun: ParcelFileDescriptor,
         config: VpnConfig
@@ -315,59 +307,51 @@ class HcYoniVpnService : VpnService() {
         }
 
         val sockFile = File(filesDir, "tun_sock")
-        try {
-            if (sockFile.exists()) sockFile.delete()
-        } catch (_: Exception) {
-        }
         val sockPath = sockFile.absolutePath
 
-        val bindSock = LocalSocket()
-        bindSock.bind(LocalSocketAddress(sockPath, LocalSocketAddress.Namespace.FILESYSTEM))
-        val localServer = LocalServerSocket(bindSock.fileDescriptor)
-        tunBindSocket = bindSock
-        tunLocalServer = localServer
-
-        fdServerJob?.cancel()
-        fdServerJob = serviceScope.launch {
-            try {
-                while (isActive && shouldRun && tunLocalServer == localServer) {
-                    val client = localServer.accept()
-                    try {
-                        client.setFileDescriptorsForSend(arrayOf(tun.fileDescriptor))
-                        client.outputStream.write(0)
-                        client.outputStream.flush()
-                    } finally {
-                        try {
-                            client.close()
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-            } catch (_: IOException) {
-            }
-        }
-
-        val cmd = mutableListOf(
+        // Intentamos primero sin --netif-netmask (formato shadowsocks/badvpn) y si falla, con --netif-netmask
+        val cmdNoMask = mutableListOf(
             bin.absolutePath,
             "--netif-ipaddr", "198.18.0.2",
-            "--netif-netmask", "255.255.255.0",
             "--socks-server-addr", "127.0.0.1:$socksPort",
             "--tunmtu", "1500",
             "--sock-path", sockPath,
-            "--loglevel", "2"
+            "--loglevel", "warning",
+            "--enable-udprelay"
         )
         if (config.enableIpv6) {
-            cmd.addAll(listOf("--netif-ip6addr", "fc00::2"))
+            cmdNoMask.addAll(listOf("--netif-ip6addr", "fc00::2"))
         }
-        if (config.udpgwEnabled) {
-            cmd.addAll(
-                listOf(
-                    "--udpgw-remote-server-addr", "127.0.0.1:${config.udpgwPort}",
-                    "--udpgw-transparent-dns"
-                )
+
+        var proc = startAndSendFd(cmdNoMask, sockFile, tun)
+        if (proc == null) {
+            val cmdWithMask = mutableListOf(
+                bin.absolutePath,
+                "--netif-ipaddr", "198.18.0.2",
+                "--netif-netmask", "255.255.255.0",
+                "--socks-server-addr", "127.0.0.1:$socksPort",
+                "--tunmtu", "1500",
+                "--sock-path", sockPath,
+                "--loglevel", "warning",
+                "--enable-udprelay"
             )
-        } else {
-            cmd.add("--enable-udprelay")
+            if (config.enableIpv6) {
+                cmdWithMask.addAll(listOf("--netif-ip6addr", "fc00::2"))
+            }
+            proc = startAndSendFd(cmdWithMask, sockFile, tun)
+        }
+
+        return proc ?: throw IllegalStateException("El motor nativo badvpn-tun2socks se detuvo al iniciar")
+    }
+
+    private suspend fun startAndSendFd(
+        cmd: List<String>,
+        sockFile: File,
+        tun: ParcelFileDescriptor
+    ): Process? {
+        try {
+            if (sockFile.exists()) sockFile.delete()
+        } catch (_: Exception) {
         }
 
         val process = ProcessBuilder(cmd)
@@ -376,17 +360,52 @@ class HcYoniVpnService : VpnService() {
             .start()
         tun2socksProcess = process
 
+        val logLines = java.util.Collections.synchronizedList(mutableListOf<String>())
         serviceScope.launch {
             try {
                 process.inputStream.bufferedReader().forEachLine { line ->
                     val t = line.trim()
-                    if (t.isNotEmpty() && (t.contains("ERROR", ignoreCase = true) || t.contains("exit", ignoreCase = true))) {
-                        VpnStateBus.log("TUN2SOCKS", t.take(160), LogLevel.WARN)
+                    if (t.isNotEmpty()) {
+                        if (logLines.size < 8) logLines.add(t)
+                        if (t.contains("ERROR", ignoreCase = true) || t.contains("exit", ignoreCase = true)) {
+                            VpnStateBus.log("TUN2SOCKS", t.take(160), LogLevel.WARN)
+                        }
                     }
                 }
             } catch (_: Exception) {
             }
         }
+
+        // tun2socks crea el socket UNIX --sock-path y nuestra app le envía el tun.fileDescriptor como cliente
+        var fdSent = false
+        for (attempt in 0 until 20) {
+            if (!process.isAlive) break
+            try {
+                val ls = LocalSocket()
+                ls.connect(LocalSocketAddress(sockFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
+                ls.setFileDescriptorsForSend(arrayOf(tun.fileDescriptor))
+                ls.outputStream.write(42)
+                ls.outputStream.flush()
+                ls.close()
+                fdSent = true
+                break
+            } catch (_: IOException) {
+                delay(100)
+            }
+        }
+
+        if (!process.isAlive || !fdSent) {
+            if (logLines.isNotEmpty()) {
+                VpnStateBus.log("TUN2SOCKS", logLines.first().take(180), LogLevel.WARN)
+            }
+            try {
+                process.destroyForcibly()
+            } catch (_: Exception) {
+            }
+            tun2socksProcess = null
+            return null
+        }
+
         return process
     }
 
@@ -426,7 +445,7 @@ class HcYoniVpnService : VpnService() {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(1500)
-            .addAddress("198.18.0.1", 24)
+            .addAddress("198.18.0.1", 30)
             .addRoute("0.0.0.0", 0)
             .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
 
@@ -536,9 +555,6 @@ class HcYoniVpnService : VpnService() {
         }
         wifiShareServer = null
 
-        fdServerJob?.cancel()
-        fdServerJob = null
-
         try {
             tun2socksProcess?.destroy()
             tun2socksProcess?.waitFor(300, TimeUnit.MILLISECONDS)
@@ -546,18 +562,6 @@ class HcYoniVpnService : VpnService() {
         } catch (_: Exception) {
         }
         tun2socksProcess = null
-
-        try {
-            tunLocalServer?.close()
-        } catch (_: Exception) {
-        }
-        tunLocalServer = null
-
-        try {
-            tunBindSocket?.close()
-        } catch (_: Exception) {
-        }
-        tunBindSocket = null
 
         try {
             tunInterface?.close()
