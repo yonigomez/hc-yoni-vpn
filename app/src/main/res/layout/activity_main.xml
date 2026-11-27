@@ -14,7 +14,7 @@
         android:background="@color/bg_primary"
         android:orientation="vertical">
 
-        <!-- Barra superior -->
+        <!-- Barra superior (sin escudo verde arriba) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -57,43 +57,34 @@
             </LinearLayout>
 
             <ImageButton
-                android:id="@+id/btnBatteryShield"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Protección sin suspensión"
-                android:padding="8dp"
-                android:src="@drawable/ic_shield_lock" />
-
-            <ImageButton
                 android:id="@+id/btnImportConfig"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Importar archivo .yoni"
-                android:padding="8dp"
+                android:padding="9dp"
                 android:src="@drawable/ic_download_file" />
 
             <ImageButton
                 android:id="@+id/btnExportConfig"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Guardar archivo encriptado"
-                android:padding="8dp"
+                android:padding="9dp"
                 android:src="@drawable/ic_upload_file" />
 
             <ImageButton
                 android:id="@+id/btnClearConfig"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Borrar configuración"
-                android:padding="8dp"
+                android:padding="9dp"
                 android:src="@drawable/ic_delete" />
         </LinearLayout>
 
-        <!-- Tarjeta de Estado y Botón Conectar -->
+        <!-- Tarjeta de Estado, Tiempo (Horas) y Botón Conectar -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -149,7 +140,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"
-                        android:text="00:00:00"
+                        android:text="⏱ 0h 00m 00s"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp"
                         android:textStyle="bold" />
@@ -222,7 +213,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Tarjeta de Banner del Archivo o Banner de la VPS -->
+        <!-- Banner en pantalla -->
         <LinearLayout
             android:id="@+id/cardBanner"
             android:layout_width="match_parent"
@@ -286,7 +277,7 @@
             app:tabSelectedTextColor="@color/accent_cyan"
             app:tabTextColor="@color/text_secondary" />
 
-        <!-- Contenido de pestañas -->
+        <!-- Contenido -->
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -305,7 +296,6 @@
                     android:orientation="vertical"
                     android:padding="14dp">
 
-                    <!-- Bloque Servidor SSH -->
                     <com.google.android.material.card.MaterialCardView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -470,11 +460,12 @@
                                 android:text="Mi HWID: ... (Tocar para copiar)"
                                 android:textColor="@color/accent_cyan"
                                 android:textSize="12sp"
+                                app:icon="@drawable/ic_copy"
+                                app:iconTint="@color/accent_cyan"
                                 app:strokeColor="@color/stroke_subtle" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
-                    <!-- Bloque Modo SSL / Proxy -->
                     <com.google.android.material.card.MaterialCardView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -566,7 +557,6 @@
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
-                    <!-- Bloque Juegos 7300, DNS y Anti-cierre -->
                     <com.google.android.material.card.MaterialCardView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -754,7 +744,7 @@
                 </LinearLayout>
             </ScrollView>
 
-            <!-- PESTAÑA 2: EDITOR DE PAYLOAD -->
+            <!-- PESTAÑA 2: PAYLOAD -->
             <ScrollView
                 android:id="@+id/panelPayload"
                 android:layout_width="match_parent"
@@ -908,7 +898,7 @@
                 </LinearLayout>
             </ScrollView>
 
-            <!-- PESTAÑA 3: CONSOLA DE LOGS EN VIVO -->
+            <!-- PESTAÑA 3: LOGS -->
             <LinearLayout
                 android:id="@+id/panelLogs"
                 android:layout_width="match_parent"
@@ -983,10 +973,10 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- MENÚ LATERAL DESLIZABLE (HAMBURGUESA ☰) -->
+    <!-- MENÚ LATERAL DESLIZABLE CON ÍCONOS PROFESIONALES -->
     <ScrollView
         android:id="@+id/drawerPanel"
-        android:layout_width="305dp"
+        android:layout_width="310dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:background="@color/bg_surface"
@@ -998,7 +988,6 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- Cabecera del Creador y Logo -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -1008,8 +997,8 @@
 
                 <ImageView
                     android:id="@+id/ivDrawerLogo"
-                    android:layout_width="96dp"
-                    android:layout_height="96dp"
+                    android:layout_width="94dp"
+                    android:layout_height="94dp"
                     android:contentDescription="Logo HC YONI"
                     android:scaleType="centerCrop"
                     android:src="@drawable/ic_yoni_logo" />
@@ -1047,7 +1036,7 @@
                 android:layout_marginBottom="12dp"
                 android:background="@color/stroke_subtle" />
 
-            <!-- Tarjeta de HWID en el menú -->
+            <!-- Tarjeta de HWID -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -1085,6 +1074,9 @@
                     android:text="Copiar HWID"
                     android:textColor="@color/accent_cyan"
                     android:textSize="12sp"
+                    app:icon="@drawable/ic_copy"
+                    app:iconGravity="textStart"
+                    app:iconTint="@color/accent_cyan"
                     app:strokeColor="@color/stroke_subtle" />
             </LinearLayout>
 
@@ -1094,8 +1086,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Editar Puerto Juegos (7300) y DNS"
+                android:gravity="start|center_vertical"
+                android:text="Juegos (7300) y DNS"
                 android:textColor="@color/text_primary"
+                app:icon="@drawable/ic_gamepad"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/accent_green"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
@@ -1104,8 +1101,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Guardar Archivo Encriptado (.yoni)"
+                android:gravity="start|center_vertical"
+                android:text="Guardar Encriptado (.yoni)"
                 android:textColor="@color/accent_cyan"
+                app:icon="@drawable/ic_upload_file"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/accent_cyan"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
@@ -1114,8 +1116,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
+                android:gravity="start|center_vertical"
                 android:text="Importar Archivo (.yoni)"
                 android:textColor="@color/text_primary"
+                app:icon="@drawable/ic_download_file"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/text_primary"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
@@ -1124,8 +1131,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Protección Sin Suspensión"
+                android:gravity="start|center_vertical"
+                android:text="Sin Suspensión / Batería"
                 android:textColor="@color/accent_green"
+                app:icon="@drawable/ic_shield_lock"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/accent_green"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
@@ -1134,8 +1146,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
+                android:gravity="start|center_vertical"
                 android:text="Avisos de Uso y Créditos"
                 android:textColor="@color/text_primary"
+                app:icon="@drawable/ic_info"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/text_primary"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
@@ -1143,18 +1160,28 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="10dp"
+                android:gravity="start|center_vertical"
                 android:text="WhatsApp: 3873063499"
                 android:textColor="@color/bg_primary"
                 android:textStyle="bold"
-                app:backgroundTint="@color/accent_green" />
+                app:backgroundTint="@color/accent_green"
+                app:icon="@drawable/ic_chat"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/bg_primary" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnDrawerClearConfig"
                 style="@style/Widget.Material3.Button.OutlinedButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:gravity="start|center_vertical"
                 android:text="Borrar Configuración Actual"
                 android:textColor="@color/accent_red"
+                app:icon="@drawable/ic_delete"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/accent_red"
                 app:strokeColor="@color/accent_red" />
         </LinearLayout>
     </ScrollView>
