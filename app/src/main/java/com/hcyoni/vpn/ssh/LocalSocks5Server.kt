@@ -23,6 +23,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -35,9 +36,10 @@ class LocalSocks5Server(
     private val dnsPrimary: String,
     private val dnsSecondary: String,
     private val enableIpv6: Boolean,
+    private val udpgwEnabled: Boolean,
+    private val udpgwPort: Int,
     private val onLog: (String, LogLevel) -> Unit
 ) {
-    // Pool sin límite fijo de 64 hilos para no saturar con YouTube/navegador
     private val executor = Executors.newCachedThreadPool()
     private val dispatcher = executor.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -53,6 +55,18 @@ class LocalSocks5Server(
 
     val txBytes = AtomicLong(0L)
     val rxBytes = AtomicLong(0L)
+
+    private val udpgwClient: BadVpnUdpgwClient? = if (udpgwEnabled) {
+        BadVpnUdpgwClient(
+            sessionProvider = sessionProvider,
+            udpgwPort = udpgwPort,
+            onBytesTx = { txBytes.addAndGet(it) },
+            onBytesRx = { rxBytes.addAndGet(it) },
+            onLog = onLog
+        )
+    } else {
+        null
+    }
 
     @Volatile
     var listeningPort: Int = 0
@@ -79,6 +93,10 @@ class LocalSocks5Server(
     }
 
     fun stop() {
+        try {
+            udpgwClient?.close()
+        } catch (_: Exception) {
+        }
         try {
             serverSocket?.close()
         } catch (_: Exception) {
@@ -187,6 +205,12 @@ class LocalSocks5Server(
             return
         }
 
+        // Evita que Android DNS Privado (853) intente salir por la VPS hacia la IP virtual mapdns
+        if (destHost == "198.18.0.2") {
+            sendSocksReply(clientOut, 0x05)
+            return
+        }
+
         val session = sessionProvider()
         if (session == null || !session.isConnected) {
             sendSocksReply(clientOut, 0x01)
@@ -230,7 +254,6 @@ class LocalSocks5Server(
                         client.shutdownOutput()
                     } catch (_: Exception) {
                     }
-                    // Si el servidor remoto cerró el stream, cerramos el cliente para no dejar hilos colgados
                     try {
                         client.close()
                     } catch (_: Exception) {
@@ -301,6 +324,7 @@ class LocalSocks5Server(
                 if (n <= 0) break
             }
             udpJob.cancel()
+            udpgwClient?.unregisterSocket(udpSocket)
             activeSockets.remove(udpSocket)
             try {
                 udpSocket.close()
@@ -311,48 +335,82 @@ class LocalSocks5Server(
 
     private fun processUdpPacket(
         udpSocket: DatagramSocket,
-        clientAddr: java.net.SocketAddress,
+        clientAddr: SocketAddress,
         data: ByteArray
     ) {
         if (data.size < 10) return
         if (data[2].toInt() != 0) return
 
         val atyp = data[3].toInt() and 0xFF
-        val addrEnd = when (atyp) {
-            0x01 -> 4 + 4
+        val dstInet: InetAddress?
+        val addrEnd: Int
+
+        when (atyp) {
+            0x01 -> {
+                addrEnd = 8
+                if (data.size <= addrEnd + 2) return
+                dstInet = InetAddress.getByAddress(data.copyOfRange(4, 8))
+            }
             0x03 -> {
                 val dLen = data[4].toInt() and 0xFF
-                4 + 1 + dLen
+                addrEnd = 5 + dLen
+                if (data.size <= addrEnd + 2) return
+                val hostName = String(data.copyOfRange(5, addrEnd), Charsets.UTF_8)
+                dstInet = try {
+                    InetAddress.getByName(hostName)
+                } catch (_: Exception) {
+                    null
+                }
             }
-            0x04 -> 4 + 16
+            0x04 -> {
+                addrEnd = 20
+                if (data.size <= addrEnd + 2) return
+                dstInet = InetAddress.getByAddress(data.copyOfRange(4, 20))
+            }
             else -> return
         }
+
         val headerEnd = addrEnd + 2
         if (data.size <= headerEnd) return
 
         val dstPort = ((data[addrEnd].toInt() and 0xFF) shl 8) or (data[addrEnd + 1].toInt() and 0xFF)
-        if (dstPort != 53) return
+        val payload = data.copyOfRange(headerEnd, data.size)
 
-        val dnsQuery = data.copyOfRange(headerEnd, data.size)
-        txBytes.addAndGet(dnsQuery.size.toLong())
+        if (dstPort == 53) {
+            txBytes.addAndGet(payload.size.toLong())
+            val dnsResponse = resolveDnsOverSshTcp(payload) ?: resolveDnsOverHttps443(payload) ?: return
+            rxBytes.addAndGet(dnsResponse.size.toLong())
 
-        val dnsResponse = resolveDnsOverSshTcp(dnsQuery) ?: resolveDnsOverHttps443(dnsQuery) ?: return
-        rxBytes.addAndGet(dnsResponse.size.toLong())
+            val headerSlice = data.copyOfRange(0, headerEnd)
+            headerSlice[0] = 0
+            headerSlice[1] = 0
+            headerSlice[2] = 0
 
-        val headerSlice = data.copyOfRange(0, headerEnd)
-        headerSlice[0] = 0
-        headerSlice[1] = 0
-        headerSlice[2] = 0
+            val outPacket = ByteArray(headerSlice.size + dnsResponse.size)
+            System.arraycopy(headerSlice, 0, outPacket, 0, headerSlice.size)
+            System.arraycopy(dnsResponse, 0, outPacket, headerSlice.size, dnsResponse.size)
 
-        val outPacket = ByteArray(headerSlice.size + dnsResponse.size)
-        System.arraycopy(headerSlice, 0, outPacket, 0, headerSlice.size)
-        System.arraycopy(dnsResponse, 0, outPacket, headerSlice.size, dnsResponse.size)
-
-        try {
-            if (!udpSocket.isClosed) {
-                udpSocket.send(DatagramPacket(outPacket, outPacket.size, clientAddr))
+            try {
+                if (!udpSocket.isClosed) {
+                    udpSocket.send(DatagramPacket(outPacket, outPacket.size, clientAddr))
+                }
+            } catch (_: IOException) {
             }
-        } catch (_: IOException) {
+            return
+        }
+
+        // Tráfico UDP para juegos en línea, llamadas y QUIC -> puente BadVPN UDPGW (puerto 7300)
+        if (udpgwEnabled && udpgwClient != null && dstInet != null) {
+            if (atyp == 0x04 && !enableIpv6) return
+            val socksAddrHeader = data.copyOfRange(3, headerEnd)
+            udpgwClient.sendUdpPacket(
+                udpSocket = udpSocket,
+                clientAddr = clientAddr,
+                dstAddress = dstInet,
+                dstPort = dstPort,
+                socksAddrHeader = socksAddrHeader,
+                payload = payload
+            )
         }
     }
 
@@ -518,7 +576,7 @@ class LocalSocks5Server(
     private fun logRateLimited(msg: String) {
         val now = System.currentTimeMillis()
         val prev = lastErrorLogMs.get()
-        if (now - prev >= 4_000 && lastErrorLogMs.compareAndSet(prev, now)) {
+        if (now - prev >= 8_000 && lastErrorLogMs.compareAndSet(prev, now)) {
             onLog(msg, LogLevel.WARN)
         }
     }
