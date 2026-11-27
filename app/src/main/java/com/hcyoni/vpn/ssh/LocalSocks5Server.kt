@@ -4,13 +4,14 @@ import com.hcyoni.vpn.model.LogLevel
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.EOFException
@@ -22,9 +23,12 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketAddress
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 class LocalSocks5Server(
     private val sessionProvider: () -> Session?,
@@ -33,12 +37,19 @@ class LocalSocks5Server(
     private val enableIpv6: Boolean,
     private val onLog: (String, LogLevel) -> Unit
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Pool sin límite fijo de 64 hilos para no saturar con YouTube/navegador
+    private val executor = Executors.newCachedThreadPool()
+    private val dispatcher = executor.asCoroutineDispatcher()
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+
     private val activeSockets = ConcurrentHashMap.newKeySet<Closeable>()
     private val activeChannels = ConcurrentHashMap.newKeySet<ChannelDirectTCPIP>()
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+
+    private val loggedFirstSuccess = AtomicBoolean(false)
+    private val lastErrorLogMs = AtomicLong(0L)
 
     val txBytes = AtomicLong(0L)
     val rxBytes = AtomicLong(0L)
@@ -48,7 +59,7 @@ class LocalSocks5Server(
         private set
 
     fun start(): Int {
-        val server = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
+        val server = ServerSocket(0, 256, InetAddress.getByName("127.0.0.1"))
         serverSocket = server
         listeningPort = server.localPort
 
@@ -93,6 +104,10 @@ class LocalSocks5Server(
 
         acceptJob?.cancel()
         scope.cancel()
+        try {
+            executor.shutdownNow()
+        } catch (_: Exception) {
+        }
     }
 
     private suspend fun handleClient(client: Socket) {
@@ -100,7 +115,6 @@ class LocalSocks5Server(
             val input = DataInputStream(client.getInputStream())
             val output = client.getOutputStream()
 
-            // 1. Handshake SOCKS5 (RFC 1928)
             val ver = input.readUnsignedByte()
             if (ver != 0x05) return
             val nMethods = input.readUnsignedByte()
@@ -115,7 +129,6 @@ class LocalSocks5Server(
             output.write(byteArrayOf(0x05, 0x00))
             output.flush()
 
-            // 2. Solicitud SOCKS5
             val reqVer = input.readUnsignedByte()
             val cmd = input.readUnsignedByte()
             input.readUnsignedByte() // RSV
@@ -190,10 +203,14 @@ class LocalSocks5Server(
 
             val sshIn = channel.inputStream
             val sshOut = channel.outputStream
-            channel.connect(12_000)
+            channel.connect(15_000)
             activeChannels.add(channel)
 
             sendSocksReply(clientOut, 0x00)
+
+            if (loggedFirstSuccess.compareAndSet(false, true)) {
+                onLog("Primer enlace TCP activo hacia $destHost:$destPort", LogLevel.SUCCESS)
+            }
 
             coroutineScope {
                 val up = launch {
@@ -213,11 +230,17 @@ class LocalSocks5Server(
                         client.shutdownOutput()
                     } catch (_: Exception) {
                     }
+                    // Si el servidor remoto cerró el stream, cerramos el cliente para no dejar hilos colgados
+                    try {
+                        client.close()
+                    } catch (_: Exception) {
+                    }
                 }
                 up.join()
                 down.join()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logRateLimited("Fallo TCP hacia $destHost:$destPort -> ${e.message ?: "rechazado"}")
             try {
                 sendSocksReply(clientOut, 0x05)
             } catch (_: Exception) {
@@ -242,7 +265,6 @@ class LocalSocks5Server(
         activeSockets.add(udpSocket)
         val udpPort = udpSocket.localPort
 
-        // Responder con dirección local de enlace UDP (127.0.0.1:udpPort)
         controlOut.write(
             byteArrayOf(
                 0x05, 0x00, 0x00, 0x01,
@@ -269,9 +291,8 @@ class LocalSocks5Server(
                 }
             }
 
-            // Según RFC 1928, el socket UDP vive mientras siga abierto el control TCP
             val sink = ByteArray(64)
-            while (isActive) {
+            while (isActive && !controlSocket.isClosed) {
                 val n = try {
                     controlIn.read(sink)
                 } catch (_: IOException) {
@@ -290,11 +311,11 @@ class LocalSocks5Server(
 
     private fun processUdpPacket(
         udpSocket: DatagramSocket,
-        clientAddr: SocketAddress,
+        clientAddr: java.net.SocketAddress,
         data: ByteArray
     ) {
         if (data.size < 10) return
-        if (data[2].toInt() != 0) return // No soportamos datagramas UDP fragmentados
+        if (data[2].toInt() != 0) return
 
         val atyp = data[3].toInt() and 0xFF
         val addrEnd = when (atyp) {
@@ -310,15 +331,12 @@ class LocalSocks5Server(
         if (data.size <= headerEnd) return
 
         val dstPort = ((data[addrEnd].toInt() and 0xFF) shl 8) or (data[addrEnd + 1].toInt() and 0xFF)
-        if (dstPort != 53) {
-            // El servidor SSH estándar solo reenvía TCP; las consultas DNS (53) se convierten a TCP
-            return
-        }
+        if (dstPort != 53) return
 
         val dnsQuery = data.copyOfRange(headerEnd, data.size)
         txBytes.addAndGet(dnsQuery.size.toLong())
 
-        val dnsResponse = resolveDnsOverSshTcp(dnsQuery) ?: return
+        val dnsResponse = resolveDnsOverSshTcp(dnsQuery) ?: resolveDnsOverHttps443(dnsQuery) ?: return
         rxBytes.addAndGet(dnsResponse.size.toLong())
 
         val headerSlice = data.copyOfRange(0, headerEnd)
@@ -358,7 +376,7 @@ class LocalSocks5Server(
 
                 val chIn = DataInputStream(ch.inputStream)
                 val chOut = ch.outputStream
-                ch.connect(8_000)
+                ch.connect(4_000)
                 activeChannels.add(ch)
 
                 val framed = ByteArray(2 + query.size)
@@ -373,7 +391,6 @@ class LocalSocks5Server(
                 val resp = ByteArray(respLen)
                 chIn.readFully(resp)
                 return resp
-            } catch (_: EOFException) {
             } catch (_: Exception) {
             } finally {
                 if (ch != null) {
@@ -388,12 +405,98 @@ class LocalSocks5Server(
         return null
     }
 
+    private fun resolveDnsOverHttps443(query: ByteArray): ByteArray? {
+        val session = sessionProvider() ?: return null
+        if (!session.isConnected) return null
+
+        val endpoints = listOf("1.1.1.1" to "cloudflare-dns.com", "8.8.8.8" to "dns.google")
+        for ((ip, hostHeader) in endpoints) {
+            var ch: ChannelDirectTCPIP? = null
+            var tlsSock: SSLSocket? = null
+            try {
+                ch = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+                ch.setHost(ip)
+                ch.setPort(443)
+                ch.setOrgIPAddress("127.0.0.1")
+                ch.setOrgPort(443)
+                val chIn = ch.inputStream
+                val chOut = ch.outputStream
+                ch.connect(6_000)
+                activeChannels.add(ch)
+
+                val adapter = ChannelSocketAdapter(ch, chIn, chOut)
+                val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                tlsSock = factory.createSocket(adapter, hostHeader, 443, true) as SSLSocket
+                tlsSock.soTimeout = 6_000
+                tlsSock.startHandshake()
+
+                val reqHeaders = "POST /dns-query HTTP/1.1\r\n" +
+                    "Host: $hostHeader\r\n" +
+                    "Content-Type: application/dns-message\r\n" +
+                    "Accept: application/dns-message\r\n" +
+                    "Content-Length: ${query.size}\r\n" +
+                    "Connection: close\r\n\r\n"
+
+                val out = tlsSock.outputStream
+                out.write(reqHeaders.toByteArray(Charsets.ISO_8859_1))
+                out.write(query)
+                out.flush()
+
+                val respStream = tlsSock.inputStream
+                val rawAll = ByteArrayOutputStream()
+                val buf = ByteArray(4096)
+                while (true) {
+                    val n = respStream.read(buf)
+                    if (n <= 0) break
+                    rawAll.write(buf, 0, n)
+                    if (rawAll.size() > 16_384) break
+                }
+
+                val bytes = rawAll.toByteArray()
+                val splitIdx = findHeaderEnd(bytes)
+                if (splitIdx > 0 && splitIdx < bytes.size) {
+                    val headerText = String(bytes, 0, splitIdx, Charsets.ISO_8859_1)
+                    if (headerText.contains(" 200 ")) {
+                        return bytes.copyOfRange(splitIdx, bytes.size)
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    tlsSock?.close()
+                } catch (_: Exception) {
+                }
+                if (ch != null) {
+                    activeChannels.remove(ch)
+                    try {
+                        ch.disconnect()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun findHeaderEnd(bytes: ByteArray): Int {
+        for (i in 0 until bytes.size - 3) {
+            if (bytes[i] == '\r'.code.toByte() &&
+                bytes[i + 1] == '\n'.code.toByte() &&
+                bytes[i + 2] == '\r'.code.toByte() &&
+                bytes[i + 3] == '\n'.code.toByte()
+            ) {
+                return i + 4
+            }
+        }
+        return -1
+    }
+
     private fun copyStream(
         input: InputStream,
         output: OutputStream,
         onBytes: (Long) -> Unit
     ) {
-        val buffer = ByteArray(16_384)
+        val buffer = ByteArray(32_768)
         try {
             while (true) {
                 val read = input.read(buffer)
@@ -402,6 +505,7 @@ class LocalSocks5Server(
                 output.flush()
                 onBytes(read.toLong())
             }
+        } catch (_: EOFException) {
         } catch (_: IOException) {
         }
     }
@@ -409,5 +513,40 @@ class LocalSocks5Server(
     private fun sendSocksReply(out: OutputStream, rep: Int) {
         out.write(byteArrayOf(0x05, rep.toByte(), 0x00, 0x01, 0, 0, 0, 0, 0, 0))
         out.flush()
+    }
+
+    private fun logRateLimited(msg: String) {
+        val now = System.currentTimeMillis()
+        val prev = lastErrorLogMs.get()
+        if (now - prev >= 4_000 && lastErrorLogMs.compareAndSet(prev, now)) {
+            onLog(msg, LogLevel.WARN)
+        }
+    }
+
+    private class ChannelSocketAdapter(
+        private val channel: ChannelDirectTCPIP,
+        private val input: InputStream,
+        private val output: OutputStream
+    ) : Socket() {
+        @Volatile
+        private var closedFlag = false
+        private var timeoutMs = 0
+
+        override fun getInputStream(): InputStream = input
+        override fun getOutputStream(): OutputStream = output
+        override fun isConnected(): Boolean = channel.isConnected && !closedFlag
+        override fun isClosed(): Boolean = closedFlag || channel.isClosed
+        override fun setSoTimeout(timeout: Int) {
+            timeoutMs = timeout
+        }
+
+        override fun getSoTimeout(): Int = timeoutMs
+        override fun close() {
+            closedFlag = true
+            try {
+                channel.disconnect()
+            } catch (_: Exception) {
+            }
+        }
     }
 }
