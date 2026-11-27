@@ -79,7 +79,6 @@ class LocalSocks5Server(
         serverSocket = server
         listeningPort = server.localPort
 
-        // Pre-conectar puerto 7300 en segundo plano para que el primer paquete del juego no espere
         udpgwClient?.prewarmAsync()
 
         acceptJob = scope.launch {
@@ -232,7 +231,8 @@ class LocalSocks5Server(
 
             val sshIn = channel.inputStream
             val sshOut = channel.outputStream
-            channel.connect(15_000)
+            // Timeout de 8s para responder antes del límite de 15s de tun2socks y evitar apps congeladas
+            channel.connect(8_000)
             activeChannels.add(channel)
 
             sendSocksReply(clientOut, 0x00)
@@ -411,13 +411,16 @@ class LocalSocks5Server(
             return
         }
 
+        // Bloquear QUIC (UDP 443/80) y ruido de red local para que YouTube/Chrome/TikTok abran
+        // directo por TCP rápido y NO saturen el túnel UDP 7300 de Free Fire y juegos
+        if (dstPort in NON_GAME_UDP_BLOCK_PORTS) return
+
         if (!udpgwEnabled || udpgwClient == null) return
         if (atyp == 0x04 && !enableIpv6) return
 
         val socksAddrHeader = data.copyOfRange(3, headerEnd)
         val knownInet = directInet
         if (knownInet != null) {
-            // Envío directo en orden FIFO exacto para ping estable en juegos
             udpgwClient.sendUdpPacket(
                 udpSocket = udpSocket,
                 clientAddr = clientAddr,
@@ -428,7 +431,6 @@ class LocalSocks5Server(
                 payload = payload
             )
         } else if (domainToResolve != null) {
-            // Si llegó por dominio desde mapdns, resolvemos por dentro del túnel SSH y cacheamos
             val host = domainToResolve
             parentScope.launch {
                 val resolved = resolveDomainViaTunnel(host) ?: return@launch
@@ -448,7 +450,6 @@ class LocalSocks5Server(
     private fun resolveDomainViaTunnel(domain: String): InetAddress? {
         domainIpv4Cache[domain]?.let { return it }
 
-        // Verificar si el string ya es una IPv4
         if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(domain)) {
             return try {
                 InetAddress.getByName(domain).also { domainIpv4Cache[domain] = it }
@@ -468,7 +469,6 @@ class LocalSocks5Server(
         val labels = domain.trim().trimEnd('.').split(".")
         if (labels.isEmpty()) return null
         val out = ByteArrayOutputStream(64)
-        // Header DNS estándar (ID=0x4843, RD=1, QDCOUNT=1)
         out.write(byteArrayOf(0x48, 0x43, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
         for (lbl in labels) {
             val bytes = lbl.toByteArray(Charsets.UTF_8)
@@ -477,7 +477,6 @@ class LocalSocks5Server(
             out.write(bytes)
         }
         out.write(0x00)
-        // QTYPE=A (1), QCLASS=IN (1)
         out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
         return out.toByteArray()
     }
@@ -587,13 +586,13 @@ class LocalSocks5Server(
                 ch.setOrgPort(443)
                 val chIn = ch.inputStream
                 val chOut = ch.outputStream
-                ch.connect(6_000)
+                ch.connect(5_000)
                 activeChannels.add(ch)
 
                 val adapter = ChannelSocketAdapter(ch, chIn, chOut)
                 val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 tlsSock = factory.createSocket(adapter, hostHeader, 443, true) as SSLSocket
-                tlsSock.soTimeout = 6_000
+                tlsSock.soTimeout = 5_000
                 tlsSock.startHandshake()
 
                 val reqHeaders = "POST /dns-query HTTP/1.1\r\n" +
@@ -662,7 +661,7 @@ class LocalSocks5Server(
         output: OutputStream,
         onBytes: (Long) -> Unit
     ) {
-        val buffer = ByteArray(32_768)
+        val buffer = ByteArray(16_384)
         try {
             while (true) {
                 val read = input.read(buffer)
@@ -684,7 +683,7 @@ class LocalSocks5Server(
     private fun logRateLimited(msg: String) {
         val now = System.currentTimeMillis()
         val prev = lastErrorLogMs.get()
-        if (now - prev >= 12_000 && lastErrorLogMs.compareAndSet(prev, now)) {
+        if (now - prev >= 15_000 && lastErrorLogMs.compareAndSet(prev, now)) {
             onLog(msg, LogLevel.WARN)
         }
     }
@@ -714,5 +713,9 @@ class LocalSocks5Server(
             } catch (_: Exception) {
             }
         }
+    }
+
+    companion object {
+        private val NON_GAME_UDP_BLOCK_PORTS = setOf(80, 137, 138, 139, 443, 1900, 5353)
     }
 }
