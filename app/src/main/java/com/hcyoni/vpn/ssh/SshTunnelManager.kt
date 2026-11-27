@@ -27,13 +27,21 @@ class SshTunnelManager {
         disconnect()
         VpnStateBus.setServerBanner(null)
 
+        val hideServer = config.lockServerAndProxy
+        val hideCreds = config.lockCredentials
+
         JSch.setLogger(object : Logger {
             override fun isEnabled(level: Int): Boolean = level >= Logger.WARN
             override fun log(level: Int, message: String?) {
-                if (!message.isNullOrBlank()) {
-                    val mapped = if (level >= Logger.ERROR) LogLevel.ERROR else LogLevel.WARN
-                    VpnStateBus.log("SSH", message, mapped)
+                if (message.isNullOrBlank()) return
+                if (hideServer && (message.contains("Permanently added", ignoreCase = true) ||
+                        (config.sshHost.isNotBlank() && message.contains(config.sshHost, ignoreCase = true)))
+                ) {
+                    VpnStateBus.log("SSH", "Llave del servidor verificada", LogLevel.INFO)
+                    return
                 }
+                val mapped = if (level >= Logger.ERROR) LogLevel.ERROR else LogLevel.WARN
+                VpnStateBus.log("SSH", message, mapped)
             }
         })
 
@@ -52,7 +60,8 @@ class SshTunnelManager {
         if (usingHwidAuto) {
             VpnStateBus.log(
                 "SSH",
-                "Usuario y clave vacíos: conectando con identificador HWID '$deviceHwid'",
+                if (hideCreds) "Autenticando con identificador protegido..."
+                else "Usuario/clave vacíos: conectando con HWID '$deviceHwid'",
                 LogLevel.INFO
             )
         }
@@ -94,7 +103,12 @@ class SshTunnelManager {
                 val clean = message?.trim().orEmpty()
                 if (clean.isNotEmpty() && !config.hideServerBanner) {
                     VpnStateBus.setServerBanner(clean)
-                    VpnStateBus.log("Banner VPS", clean, LogLevel.SUCCESS)
+                    val isHtml = clean.contains("<") && clean.contains(">")
+                    VpnStateBus.log(
+                        "Banner VPS",
+                        if (isHtml) "Banner HTML del servidor recibido (mostrado en pantalla)" else clean,
+                        LogLevel.SUCCESS
+                    )
                 }
             }
 
@@ -126,16 +140,18 @@ class SshTunnelManager {
         newSession.serverAliveInterval = config.keepAliveIntervalSec * 1000
         newSession.serverAliveCountMax = 3
 
-        VpnStateBus.log(
-            "SSH",
-            "Autenticando usuario '$effectiveUsername' en ${config.sshHost}:${config.sshPort}...",
-            LogLevel.INFO
-        )
+        val authMsg = when {
+            hideServer && hideCreds -> "Autenticando sesión protegida..."
+            hideServer -> "Autenticando usuario '$effectiveUsername' en servidor protegido..."
+            hideCreds -> "Autenticando credenciales protegidas en ${config.sshHost}:${config.sshPort}..."
+            else -> "Autenticando usuario '$effectiveUsername' en ${config.sshHost}:${config.sshPort}..."
+        }
+        VpnStateBus.log("SSH", authMsg, LogLevel.INFO)
         newSession.connect(20_000)
 
         VpnStateBus.log(
             "SSH",
-            "Túnel SSH establecido (${newSession.serverVersion})",
+            if (hideServer) "Túnel SSH establecido (servidor protegido)" else "Túnel SSH establecido (${newSession.serverVersion})",
             LogLevel.SUCCESS
         )
         session = newSession
