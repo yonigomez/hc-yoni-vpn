@@ -180,8 +180,8 @@ class HcYoniVpnService : VpnService() {
                 try {
                     runSingleSession(cfg)
                     if (!shouldRun || !cfg.autoReconnect) break
-                    VpnStateBus.log("VPN", "Conexión interrumpida; reintentando en 2.5s...", LogLevel.WARN)
-                    delay(2_500)
+                    VpnStateBus.log("VPN", "Conexión interrumpida; reintentando en 3s...", LogLevel.WARN)
+                    delay(3_000)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -195,8 +195,8 @@ class HcYoniVpnService : VpnService() {
                         break
                     }
                     VpnStateBus.updateState(VpnState.RECONNECTING, "Reintentando: $errMsg")
-                    updateNotification("Reconectando en 3s...")
-                    delay(3_000)
+                    updateNotification("Reconectando en 3.5s...")
+                    delay(3_500)
                 }
             }
         }
@@ -215,10 +215,10 @@ class HcYoniVpnService : VpnService() {
 
         val myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
 
-        // 1. Conectar TCP + Payload + SSH2 (con autologin HWID si corresponde)
+        // 1. Conectar TCP + Payload + SSH2
         sshManager.connect(config, myHwid, protector)
 
-        // 2. Iniciar servidor SOCKS5 local + BadVPN UDPGW (puerto 7300 para juegos)
+        // 2. Iniciar servidor SOCKS5 local + BadVPN UDPGW (puerto 7300)
         val socks = LocalSocks5Server(
             sessionProvider = { sshManager.session },
             dnsPrimary = config.dnsServer,
@@ -240,11 +240,34 @@ class HcYoniVpnService : VpnService() {
         val tun = establishTunInterface(config)
         tunInterface = tun
 
-        // 4. Iniciar motor nativo hev-socks5-tunnel
-        val yamlFile = writeHevConfigFile(socksPort, config)
+        // 4. Escribir YAML exactamente alineado e iniciar hev-socks5-tunnel
+        val hevLogFile = File(filesDir, "hev.log")
+        try {
+            if (hevLogFile.exists()) hevLogFile.delete()
+        } catch (_: Exception) {
+        }
+
+        val yamlFile = writeHevConfigFile(socksPort, config, hevLogFile.absolutePath)
         val started = TProxyService.TProxyStartService(yamlFile.absolutePath, tun.fd)
         if (!started) {
             throw IllegalStateException("No se pudo iniciar el núcleo nativo hev-socks5-tunnel")
+        }
+
+        // Dar hasta 1.5s al hilo nativo C para confirmar inicio sin falsos negativos por carrera
+        var nativeUp = false
+        for (i in 0 until 15) {
+            if (TProxyService.TProxyIsRunning()) {
+                nativeUp = true
+                break
+            }
+            delay(100)
+        }
+        if (!nativeUp) {
+            val errDetail = if (hevLogFile.exists()) hevLogFile.readText().trim().takeLast(250) else ""
+            throw IllegalStateException(
+                if (errDetail.isNotEmpty()) "Error núcleo TUN: $errDetail"
+                else "El núcleo TUN se cerró al iniciar"
+            )
         }
 
         val connectedAt = System.currentTimeMillis()
@@ -253,12 +276,22 @@ class HcYoniVpnService : VpnService() {
             "Conectado • ${config.sshHost}:${config.sshPort}"
         )
         VpnStateBus.log("VPN", "Túnel TUN activo — Navegación y Juegos listos", LogLevel.SUCCESS)
-        updateNotification("Conectado • ${config.sshHost}")
+        updateNotification("Conectado (0h 00m) • ${config.sshHost}")
 
         startStatsLoop(socks, connectedAt)
 
         while (shouldRun && sshManager.isConnected() && TProxyService.TProxyIsRunning()) {
             delay(1_500)
+        }
+
+        if (shouldRun) {
+            val sshAlive = sshManager.isConnected()
+            val tunAlive = try {
+                TProxyService.TProxyIsRunning()
+            } catch (_: Throwable) {
+                false
+            }
+            VpnStateBus.log("VPN", "Sesión finalizada (SSH=$sshAlive, TUN=$tunAlive)", LogLevel.WARN)
         }
 
         statsJob?.cancel()
@@ -315,39 +348,37 @@ class HcYoniVpnService : VpnService() {
             ?: throw IllegalStateException("Android denegó la creación de la interfaz TUN")
     }
 
-    private fun writeHevConfigFile(socksPort: Int, config: VpnConfig): File {
-        val ipv6Line = if (config.enableIpv6) "\n              ipv6: 'fc00::1'" else ""
-        val mapDnsBlock = if (!config.useCustomDns) {
-            """
-            mapdns:
-              address: 198.18.0.2
-              port: 53
-              network: 100.64.0.0
-              netmask: 255.192.0.0
-              cache-size: 10000
-            """.trimIndent() + "\n"
-        } else {
-            ""
+    private fun writeHevConfigFile(socksPort: Int, config: VpnConfig, logPath: String): File {
+        val sb = StringBuilder()
+        sb.append("tunnel:\n")
+        sb.append("  mtu: 1500\n")
+        sb.append("  ipv4: 198.18.0.1\n")
+        if (config.enableIpv6) {
+            sb.append("  ipv6: 'fc00::1'\n")
         }
+        sb.append("socks5:\n")
+        sb.append("  port: ").append(socksPort).append('\n')
+        sb.append("  address: 127.0.0.1\n")
+        sb.append("  udp: 'udp'\n")
+        if (!config.useCustomDns) {
+            sb.append("mapdns:\n")
+            sb.append("  address: 198.18.0.2\n")
+            sb.append("  port: 53\n")
+            sb.append("  network: 100.64.0.0\n")
+            sb.append("  netmask: 255.192.0.0\n")
+            sb.append("  cache-size: 10000\n")
+        }
+        sb.append("misc:\n")
+        sb.append("  task-stack-size: 86016\n")
+        sb.append("  tcp-buffer-size: 65536\n")
+        sb.append("  connect-timeout: 15000\n")
+        sb.append("  tcp-read-write-timeout: 300000\n")
+        sb.append("  udp-read-write-timeout: 60000\n")
+        sb.append("  log-file: '").append(logPath).append("'\n")
+        sb.append("  log-level: warn\n")
 
-        val yaml = """
-            tunnel:
-              mtu: 1500
-              ipv4: 198.18.0.1$ipv6Line
-            socks5:
-              port: $socksPort
-              address: 127.0.0.1
-              udp: 'udp'
-            ${mapDnsBlock}misc:
-              task-stack-size: 86016
-              tcp-buffer-size: 65536
-              connect-timeout: 15000
-              tcp-read-write-timeout: 300000
-              udp-read-write-timeout: 60000
-              log-level: error
-        """.trimIndent()
         val file = File(filesDir, "hev-socks5-tunnel.yaml")
-        file.writeText(yaml)
+        file.writeText(sb.toString())
         return file
     }
 
@@ -373,7 +404,20 @@ class HcYoniVpnService : VpnService() {
                         connectedSinceMs = connectedSinceMs
                     )
                 )
-                updateNotification("Conectado • ↓ ${formatRate(rxRate)}  ↑ ${formatRate(txRate)}")
+
+                val elapsedSec = ((System.currentTimeMillis() - connectedSinceMs) / 1000L).coerceAtLeast(0L)
+                val hrs = elapsedSec / 3600L
+                val mins = (elapsedSec % 3600L) / 60L
+                updateNotification(
+                    String.format(
+                        Locale.US,
+                        "Conectado (%dh %02dm) • ↓ %s  ↑ %s",
+                        hrs,
+                        mins,
+                        formatRate(rxRate),
+                        formatRate(txRate)
+                    )
+                )
                 delay(1_000)
             }
         }
