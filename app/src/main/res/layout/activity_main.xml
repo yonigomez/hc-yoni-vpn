@@ -14,7 +14,7 @@
         android:background="@color/bg_primary"
         android:orientation="vertical">
 
-        <!-- Barra superior (sin escudo verde arriba) -->
+        <!-- Barra superior -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -43,6 +43,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:letterSpacing="0.04"
                     android:text="@string/app_name"
                     android:textColor="@color/text_primary"
                     android:textSize="21sp"
@@ -84,14 +85,14 @@
                 android:src="@drawable/ic_delete" />
         </LinearLayout>
 
-        <!-- Tarjeta de Estado, Tiempo (Horas) y Botón Conectar -->
+        <!-- Tarjeta de Estado, Horas y Botón Conectar -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginHorizontal="14dp"
             android:layout_marginBottom="8dp"
             app:cardBackgroundColor="@color/bg_surface"
-            app:cardCornerRadius="18dp"
+            app:cardCornerRadius="20dp"
             app:strokeColor="@color/stroke_subtle"
             app:strokeWidth="1dp">
 
@@ -99,7 +100,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="13dp">
+                android:padding="14dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -157,7 +158,6 @@
                     android:textColor="@color/text_secondary"
                     android:textSize="12.5sp" />
 
-                <!-- Tráfico en tiempo real -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -202,18 +202,18 @@
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnConnectToggle"
                     android:layout_width="match_parent"
-                    android:layout_height="50dp"
+                    android:layout_height="52dp"
                     android:layout_marginTop="10dp"
                     android:text="@string/btn_connect"
                     android:textColor="@color/bg_primary"
                     android:textSize="15sp"
                     android:textStyle="bold"
                     app:backgroundTint="@color/accent_cyan"
-                    app:cornerRadius="14dp" />
+                    app:cornerRadius="15dp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Banner en pantalla -->
+        <!-- Tarjeta de Banner HTML / Aviso del Servidor o Archivo -->
         <LinearLayout
             android:id="@+id/cardBanner"
             android:layout_width="match_parent"
@@ -222,8 +222,9 @@
             android:layout_marginBottom="8dp"
             android:background="@drawable/bg_banner_card"
             android:orientation="vertical"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="10dp"
+            android:paddingHorizontal="10dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="6dp"
             android:visibility="gone">
 
             <LinearLayout
@@ -243,6 +244,17 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/btnExpandBanner"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="2dp"
+                    android:text="Ampliar"
+                    android:textColor="@color/accent_green"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold" />
+
+                <TextView
                     android:id="@+id/btnDismissBanner"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -253,15 +265,11 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/tvBannerBody"
+            <WebView
+                android:id="@+id/webBannerPreview"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:maxLines="5"
-                android:scrollbars="vertical"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
+                android:layout_height="155dp"
+                android:layout_marginTop="4dp" />
         </LinearLayout>
 
         <!-- Pestañas -->
@@ -277,13 +285,13 @@
             app:tabSelectedTextColor="@color/accent_cyan"
             app:tabTextColor="@color/text_secondary" />
 
-        <!-- Contenido -->
+        <!-- Contenido de pestañas -->
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1">
 
-            <!-- PESTAÑA 1: CONEXIÓN -->
+            <!-- PESTAÑA 1: CONEXIÓN MODERNA Y LIMPIA -->
             <ScrollView
                 android:id="@+id/panelConnection"
                 android:layout_width="match_parent"
@@ -296,12 +304,13 @@
                     android:orientation="vertical"
                     android:padding="14dp">
 
+                    <!-- Tarjeta moderna: Servidor y Cuenta SSH -->
                     <com.google.android.material.card.MaterialCardView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="14dp"
                         app:cardBackgroundColor="@color/bg_card"
-                        app:cardCornerRadius="16dp"
+                        app:cardCornerRadius="20dp"
                         app:strokeColor="@color/stroke_subtle"
                         app:strokeWidth="1dp">
 
@@ -309,13 +318,14 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:padding="14dp">
+                            android:padding="16dp">
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:text="SERVIDOR SSH"
+                                android:layout_marginBottom="10dp"
+                                android:letterSpacing="0.06"
+                                android:text="SERVIDOR Y ACCESO SSH"
                                 android:textColor="@color/accent_cyan"
                                 android:textSize="12sp"
                                 android:textStyle="bold" />
@@ -324,8 +334,8 @@
                                 android:id="@+id/tvLockNoticeSsh"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:text="🔒 Datos bloqueados por el creador del archivo"
+                                android:layout_marginBottom="10dp"
+                                android:text="🔒 Servidor y credenciales bloqueados por el creador"
                                 android:textColor="@color/accent_amber"
                                 android:textSize="12sp"
                                 android:visibility="gone" />
@@ -334,9 +344,13 @@
                                 style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:hint="Nombre del perfil"
-                                app:boxBackgroundColor="@color/bg_input">
+                                android:layout_marginBottom="10dp"
+                                android:hint="Nombre del servidor / perfil"
+                                app:boxBackgroundColor="@color/bg_input"
+                                app:boxCornerRadiusBottomEnd="14dp"
+                                app:boxCornerRadiusBottomStart="14dp"
+                                app:boxCornerRadiusTopEnd="14dp"
+                                app:boxCornerRadiusTopStart="14dp">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/etProfileName"
@@ -349,7 +363,7 @@
                             <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
+                                android:layout_marginBottom="10dp"
                                 android:orientation="horizontal">
 
                                 <com.google.android.material.textfield.TextInputLayout
@@ -357,9 +371,13 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_marginEnd="8dp"
-                                    android:layout_weight="2.2"
+                                    android:layout_weight="2.3"
                                     android:hint="Host / IP (o host:puerto@user:clave)"
-                                    app:boxBackgroundColor="@color/bg_input">
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp">
 
                                     <com.google.android.material.textfield.TextInputEditText
                                         android:id="@+id/etSshHost"
@@ -375,7 +393,11 @@
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
                                     android:hint="Puerto"
-                                    app:boxBackgroundColor="@color/bg_input">
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp">
 
                                     <com.google.android.material.textfield.TextInputEditText
                                         android:id="@+id/etSshPort"
@@ -387,46 +409,73 @@
                                 </com.google.android.material.textfield.TextInputLayout>
                             </LinearLayout>
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                            <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:hint="Usuario SSH (vacío = usar HWID)"
-                                app:boxBackgroundColor="@color/bg_input">
+                                android:layout_marginBottom="6dp"
+                                android:orientation="horizontal">
 
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etUsername"
-                                    android:layout_width="match_parent"
+                                <com.google.android.material.textfield.TextInputLayout
+                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                    android:layout_width="0dp"
                                     android:layout_height="wrap_content"
-                                    android:inputType="textNoSuggestions"
-                                    android:textColor="@color/text_primary" />
-                            </com.google.android.material.textfield.TextInputLayout>
+                                    android:layout_marginEnd="8dp"
+                                    android:layout_weight="1"
+                                    android:hint="Usuario"
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp">
 
-                            <com.google.android.material.textfield.TextInputLayout
-                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:hint="Contraseña SSH (vacía = usar HWID)"
-                                app:boxBackgroundColor="@color/bg_input"
-                                app:endIconMode="password_toggle">
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/etUsername"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:inputType="textNoSuggestions"
+                                        android:textColor="@color/text_primary" />
+                                </com.google.android.material.textfield.TextInputLayout>
 
-                                <com.google.android.material.textfield.TextInputEditText
-                                    android:id="@+id/etPassword"
-                                    android:layout_width="match_parent"
+                                <com.google.android.material.textfield.TextInputLayout
+                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                                    android:layout_width="0dp"
                                     android:layout_height="wrap_content"
-                                    android:inputType="textPassword"
-                                    android:textColor="@color/text_primary" />
-                            </com.google.android.material.textfield.TextInputLayout>
+                                    android:layout_weight="1"
+                                    android:hint="Contraseña"
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp"
+                                    app:endIconMode="password_toggle">
+
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/etPassword"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:inputType="textPassword"
+                                        android:textColor="@color/text_primary" />
+                                </com.google.android.material.textfield.TextInputLayout>
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginBottom="10dp"
+                                android:text="Si dejas Usuario y Contraseña vacíos, se conectará con tu HWID (ver en el Menú ☰)."
+                                android:textColor="@color/text_secondary"
+                                android:textSize="11sp" />
 
                             <com.google.android.material.textfield.TextInputLayout
                                 style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
                                 android:hint="Llave privada OpenSSH (opcional)"
-                                app:boxBackgroundColor="@color/bg_input">
+                                app:boxBackgroundColor="@color/bg_input"
+                                app:boxCornerRadiusBottomEnd="14dp"
+                                app:boxCornerRadiusBottomStart="14dp"
+                                app:boxCornerRadiusTopEnd="14dp"
+                                app:boxCornerRadiusTopStart="14dp">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/etPrivateKey"
@@ -435,43 +484,21 @@
                                     android:fontFamily="monospace"
                                     android:gravity="top|start"
                                     android:inputType="textMultiLine|textNoSuggestions"
-                                    android:maxLines="4"
-                                    android:minLines="2"
+                                    android:maxLines="3"
+                                    android:minLines="1"
                                     android:textColor="@color/text_primary"
                                     android:textSize="12sp" />
                             </com.google.android.material.textfield.TextInputLayout>
-
-                            <com.google.android.material.materialswitch.MaterialSwitch
-                                android:id="@+id/switchHwidAutoLogin"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:checked="true"
-                                android:text="Si usuario y clave están vacíos, conectar usando mi HWID"
-                                android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnCopyHwidInline"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="4dp"
-                                android:fontFamily="monospace"
-                                android:text="Mi HWID: ... (Tocar para copiar)"
-                                android:textColor="@color/accent_cyan"
-                                android:textSize="12sp"
-                                app:icon="@drawable/ic_copy"
-                                app:iconTint="@color/accent_cyan"
-                                app:strokeColor="@color/stroke_subtle" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
+                    <!-- Tarjeta moderna: SSL / SNI y Proxy -->
                     <com.google.android.material.card.MaterialCardView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="20dp"
                         app:cardBackgroundColor="@color/bg_card"
-                        app:cardCornerRadius="16dp"
+                        app:cardCornerRadius="20dp"
                         app:strokeColor="@color/stroke_subtle"
                         app:strokeWidth="1dp">
 
@@ -479,13 +506,14 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:padding="14dp">
+                            android:padding="16dp">
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginBottom="8dp"
-                                android:text="SSL / SNI Y PROXY OPCIONAL"
+                                android:letterSpacing="0.06"
+                                android:text="MODO SSL / SNI Y PROXY"
                                 android:textColor="@color/accent_cyan"
                                 android:textSize="12sp"
                                 android:textStyle="bold" />
@@ -495,17 +523,22 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:layout_marginBottom="8dp"
-                                android:text="Usar SSL / TLS (SNI) antes del Payload"
-                                android:textColor="@color/text_primary" />
+                                android:text="Activar SSL / TLS (SNI) antes del Payload"
+                                android:textColor="@color/text_primary"
+                                android:textSize="13.5sp" />
 
                             <com.google.android.material.textfield.TextInputLayout
                                 android:id="@+id/tilSniHost"
                                 style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
+                                android:layout_marginBottom="10dp"
                                 android:hint="SNI / Host Bug (ej: m.facebook.com)"
-                                app:boxBackgroundColor="@color/bg_input">
+                                app:boxBackgroundColor="@color/bg_input"
+                                app:boxCornerRadiusBottomEnd="14dp"
+                                app:boxCornerRadiusBottomStart="14dp"
+                                app:boxCornerRadiusTopEnd="14dp"
+                                app:boxCornerRadiusTopStart="14dp">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/etSniHost"
@@ -525,9 +558,13 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_marginEnd="8dp"
-                                    android:layout_weight="2.2"
+                                    android:layout_weight="2.3"
                                     android:hint="Proxy HTTP (vacío = SSH Directo)"
-                                    app:boxBackgroundColor="@color/bg_input">
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp">
 
                                     <com.google.android.material.textfield.TextInputEditText
                                         android:id="@+id/etProxyHost"
@@ -543,7 +580,11 @@
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
                                     android:hint="Puerto"
-                                    app:boxBackgroundColor="@color/bg_input">
+                                    app:boxBackgroundColor="@color/bg_input"
+                                    app:boxCornerRadiusBottomEnd="14dp"
+                                    app:boxCornerRadiusBottomStart="14dp"
+                                    app:boxCornerRadiusTopEnd="14dp"
+                                    app:boxCornerRadiusTopStart="14dp">
 
                                     <com.google.android.material.textfield.TextInputEditText
                                         android:id="@+id/etProxyPort"
@@ -554,191 +595,6 @@
                                         android:textColor="@color/text_primary" />
                                 </com.google.android.material.textfield.TextInputLayout>
                             </LinearLayout>
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
-
-                    <com.google.android.material.card.MaterialCardView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginBottom="20dp"
-                        app:cardBackgroundColor="@color/bg_card"
-                        app:cardCornerRadius="16dp"
-                        app:strokeColor="@color/stroke_subtle"
-                        app:strokeWidth="1dp">
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:padding="14dp">
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:text="JUEGOS (UDPGW 7300), DNS Y ESTABILIDAD"
-                                android:textColor="@color/accent_cyan"
-                                android:textSize="12sp"
-                                android:textStyle="bold" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <com.google.android.material.materialswitch.MaterialSwitch
-                                    android:id="@+id/switchUdpgw"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:checked="true"
-                                    android:text="Modo Juegos / UDP (UDPGW)"
-                                    android:textColor="@color/text_primary"
-                                    android:textSize="13sp" />
-
-                                <com.google.android.material.textfield.TextInputLayout
-                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                    android:layout_width="98dp"
-                                    android:layout_height="wrap_content"
-                                    android:hint="Puerto"
-                                    app:boxBackgroundColor="@color/bg_input">
-
-                                    <com.google.android.material.textfield.TextInputEditText
-                                        android:id="@+id/etUdpgwPort"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:inputType="number"
-                                        android:text="7300"
-                                        android:textColor="@color/accent_green"
-                                        android:textStyle="bold" />
-                                </com.google.android.material.textfield.TextInputLayout>
-                            </LinearLayout>
-
-                            <com.google.android.material.materialswitch.MaterialSwitch
-                                android:id="@+id/switchCustomDns"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="6dp"
-                                android:text="Usar DNS personalizado (apagado = automático VPS)"
-                                android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:orientation="horizontal">
-
-                                <com.google.android.material.textfield.TextInputLayout
-                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginEnd="6dp"
-                                    android:layout_weight="1"
-                                    android:hint="DNS 1"
-                                    app:boxBackgroundColor="@color/bg_input">
-
-                                    <com.google.android.material.textfield.TextInputEditText
-                                        android:id="@+id/etDnsPrimary"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:inputType="textNoSuggestions"
-                                        android:text="8.8.8.8"
-                                        android:textColor="@color/text_primary" />
-                                </com.google.android.material.textfield.TextInputLayout>
-
-                                <com.google.android.material.textfield.TextInputLayout
-                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginEnd="6dp"
-                                    android:layout_weight="1"
-                                    android:hint="DNS 2"
-                                    app:boxBackgroundColor="@color/bg_input">
-
-                                    <com.google.android.material.textfield.TextInputEditText
-                                        android:id="@+id/etDnsSecondary"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:inputType="textNoSuggestions"
-                                        android:text="1.1.1.1"
-                                        android:textColor="@color/text_primary" />
-                                </com.google.android.material.textfield.TextInputLayout>
-
-                                <com.google.android.material.textfield.TextInputLayout
-                                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="0.8"
-                                    android:hint="Ping (s)"
-                                    app:boxBackgroundColor="@color/bg_input">
-
-                                    <com.google.android.material.textfield.TextInputEditText
-                                        android:id="@+id/etKeepAlive"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:inputType="number"
-                                        android:text="25"
-                                        android:textColor="@color/text_primary" />
-                                </com.google.android.material.textfield.TextInputLayout>
-                            </LinearLayout>
-
-                            <com.google.android.material.materialswitch.MaterialSwitch
-                                android:id="@+id/switchAutoReconnect"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:checked="true"
-                                android:text="Reconexión automática ante caídas"
-                                android:textColor="@color/text_primary" />
-
-                            <com.google.android.material.materialswitch.MaterialSwitch
-                                android:id="@+id/switchAutoStart"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="Reconectar al encender el teléfono"
-                                android:textColor="@color/text_primary" />
-
-                            <com.google.android.material.materialswitch.MaterialSwitch
-                                android:id="@+id/switchEnableIpv6"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="10dp"
-                                android:text="Permitir reenvío IPv6 en el túnel"
-                                android:textColor="@color/text_primary" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnExcludedApps"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:text="Aplicaciones excluidas (0)"
-                                android:textColor="@color/accent_cyan"
-                                app:icon="@drawable/ic_apps"
-                                app:iconTint="@color/accent_cyan"
-                                app:strokeColor="@color/stroke_subtle" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnBackgroundProtection"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="Protección sin suspensión (Samsung / Batería)"
-                                android:textColor="@color/accent_green"
-                                app:icon="@drawable/ic_shield_lock"
-                                app:iconTint="@color/accent_green"
-                                app:strokeColor="@color/stroke_subtle" />
-
-                            <TextView
-                                android:id="@+id/tvBatteryStatus"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="6dp"
-                                android:text="Verificando estado de batería..."
-                                android:textColor="@color/text_secondary"
-                                android:textSize="12sp" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
                 </LinearLayout>
@@ -853,7 +709,11 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:hint="Payload HTTP (vacío = SSH puro sin payload)"
-                        app:boxBackgroundColor="@color/bg_input">
+                        app:boxBackgroundColor="@color/bg_input"
+                        app:boxCornerRadiusBottomEnd="14dp"
+                        app:boxCornerRadiusBottomStart="14dp"
+                        app:boxCornerRadiusTopEnd="14dp"
+                        app:boxCornerRadiusTopStart="14dp">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/etPayload"
@@ -973,7 +833,7 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- MENÚ LATERAL DESLIZABLE CON ÍCONOS PROFESIONALES -->
+    <!-- MENÚ LATERAL COMPLETO -->
     <ScrollView
         android:id="@+id/drawerPanel"
         android:layout_width="310dp"
@@ -1007,9 +867,10 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="hc Yoni VPN"
+                    android:letterSpacing="0.05"
+                    android:text="HC YONI"
                     android:textColor="@color/text_primary"
-                    android:textSize="19sp"
+                    android:textSize="20sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -1087,12 +948,27 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:gravity="start|center_vertical"
-                android:text="Juegos (7300) y DNS"
+                android:text="Juegos (7300), DNS y Red"
                 android:textColor="@color/text_primary"
                 app:icon="@drawable/ic_gamepad"
                 app:iconGravity="start"
                 app:iconPadding="12dp"
                 app:iconTint="@color/accent_green"
+                app:strokeColor="@color/stroke_subtle" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnDrawerExcludedApps"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:gravity="start|center_vertical"
+                android:text="Aplicaciones excluidas (0)"
+                android:textColor="@color/text_primary"
+                app:icon="@drawable/ic_apps"
+                app:iconGravity="start"
+                app:iconPadding="12dp"
+                app:iconTint="@color/accent_cyan"
                 app:strokeColor="@color/stroke_subtle" />
 
             <com.google.android.material.button.MaterialButton
