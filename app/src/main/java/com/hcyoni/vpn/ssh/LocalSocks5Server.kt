@@ -38,6 +38,7 @@ class LocalSocks5Server(
     private val enableIpv6: Boolean,
     private val udpgwEnabled: Boolean,
     private val udpgwPort: Int,
+    private val hideServerDetails: Boolean,
     private val onLog: (String, LogLevel) -> Unit
 ) {
     private val executor = Executors.newCachedThreadPool()
@@ -46,6 +47,7 @@ class LocalSocks5Server(
 
     private val activeSockets = ConcurrentHashMap.newKeySet<Closeable>()
     private val activeChannels = ConcurrentHashMap.newKeySet<ChannelDirectTCPIP>()
+    private val domainIpv4Cache = ConcurrentHashMap<String, InetAddress>()
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
@@ -76,6 +78,9 @@ class LocalSocks5Server(
         val server = ServerSocket(0, 256, InetAddress.getByName("127.0.0.1"))
         serverSocket = server
         listeningPort = server.localPort
+
+        // Pre-conectar puerto 7300 en segundo plano para que el primer paquete del juego no espere
+        udpgwClient?.prewarmAsync()
 
         acceptJob = scope.launch {
             while (isActive && !server.isClosed) {
@@ -119,6 +124,7 @@ class LocalSocks5Server(
             }
         }
         activeSockets.clear()
+        domainIpv4Cache.clear()
 
         acceptJob?.cancel()
         scope.cancel()
@@ -149,7 +155,7 @@ class LocalSocks5Server(
 
             val reqVer = input.readUnsignedByte()
             val cmd = input.readUnsignedByte()
-            input.readUnsignedByte() // RSV
+            input.readUnsignedByte()
             val atyp = input.readUnsignedByte()
             if (reqVer != 0x05) return
 
@@ -205,7 +211,6 @@ class LocalSocks5Server(
             return
         }
 
-        // Evita que Android DNS Privado (853) intente salir por la VPS hacia la IP virtual mapdns
         if (destHost == "198.18.0.2") {
             sendSocksReply(clientOut, 0x05)
             return
@@ -233,7 +238,8 @@ class LocalSocks5Server(
             sendSocksReply(clientOut, 0x00)
 
             if (loggedFirstSuccess.compareAndSet(false, true)) {
-                onLog("Primer enlace TCP activo hacia $destHost:$destPort", LogLevel.SUCCESS)
+                val targetLabel = if (hideServerDetails) "destino remoto" else "$destHost:$destPort"
+                onLog("Primer enlace TCP activo hacia $targetLabel", LogLevel.SUCCESS)
             }
 
             coroutineScope {
@@ -263,7 +269,9 @@ class LocalSocks5Server(
                 down.join()
             }
         } catch (e: Exception) {
-            logRateLimited("Fallo TCP hacia $destHost:$destPort -> ${e.message ?: "rechazado"}")
+            if (destPort != 80) {
+                logRateLimited("Enlace TCP rechazado ($destPort): ${e.message ?: "cerrado"}")
+            }
             try {
                 sendSocksReply(clientOut, 0x05)
             } catch (_: Exception) {
@@ -307,7 +315,7 @@ class LocalSocks5Server(
                         udpSocket.receive(packet)
                         val data = packet.data.copyOf(packet.length)
                         val senderAddr = packet.socketAddress
-                        launch { processUdpPacket(udpSocket, senderAddr, data) }
+                        processUdpPacketDispatch(this, udpSocket, senderAddr, data)
                     } catch (_: IOException) {
                         break
                     }
@@ -333,7 +341,8 @@ class LocalSocks5Server(
         }
     }
 
-    private fun processUdpPacket(
+    private fun processUdpPacketDispatch(
+        parentScope: CoroutineScope,
         udpSocket: DatagramSocket,
         clientAddr: SocketAddress,
         data: ByteArray
@@ -342,30 +351,32 @@ class LocalSocks5Server(
         if (data[2].toInt() != 0) return
 
         val atyp = data[3].toInt() and 0xFF
-        val dstInet: InetAddress?
         val addrEnd: Int
+        var domainToResolve: String? = null
+        var directInet: InetAddress? = null
 
         when (atyp) {
             0x01 -> {
                 addrEnd = 8
                 if (data.size <= addrEnd + 2) return
-                dstInet = InetAddress.getByAddress(data.copyOfRange(4, 8))
+                directInet = InetAddress.getByAddress(data.copyOfRange(4, 8))
             }
             0x03 -> {
                 val dLen = data[4].toInt() and 0xFF
                 addrEnd = 5 + dLen
                 if (data.size <= addrEnd + 2) return
                 val hostName = String(data.copyOfRange(5, addrEnd), Charsets.UTF_8)
-                dstInet = try {
-                    InetAddress.getByName(hostName)
-                } catch (_: Exception) {
-                    null
+                val cached = domainIpv4Cache[hostName]
+                if (cached != null) {
+                    directInet = cached
+                } else {
+                    domainToResolve = hostName
                 }
             }
             0x04 -> {
                 addrEnd = 20
                 if (data.size <= addrEnd + 2) return
-                dstInet = InetAddress.getByAddress(data.copyOfRange(4, 20))
+                directInet = InetAddress.getByAddress(data.copyOfRange(4, 20))
             }
             else -> return
         }
@@ -377,41 +388,138 @@ class LocalSocks5Server(
         val payload = data.copyOfRange(headerEnd, data.size)
 
         if (dstPort == 53) {
-            txBytes.addAndGet(payload.size.toLong())
-            val dnsResponse = resolveDnsOverSshTcp(payload) ?: resolveDnsOverHttps443(payload) ?: return
-            rxBytes.addAndGet(dnsResponse.size.toLong())
+            parentScope.launch {
+                txBytes.addAndGet(payload.size.toLong())
+                val dnsResponse = resolveDnsOverSshTcp(payload) ?: resolveDnsOverHttps443(payload) ?: return@launch
+                rxBytes.addAndGet(dnsResponse.size.toLong())
 
-            val headerSlice = data.copyOfRange(0, headerEnd)
-            headerSlice[0] = 0
-            headerSlice[1] = 0
-            headerSlice[2] = 0
+                val headerSlice = data.copyOfRange(0, headerEnd)
+                headerSlice[0] = 0
+                headerSlice[1] = 0
+                headerSlice[2] = 0
 
-            val outPacket = ByteArray(headerSlice.size + dnsResponse.size)
-            System.arraycopy(headerSlice, 0, outPacket, 0, headerSlice.size)
-            System.arraycopy(dnsResponse, 0, outPacket, headerSlice.size, dnsResponse.size)
-
-            try {
-                if (!udpSocket.isClosed) {
-                    udpSocket.send(DatagramPacket(outPacket, outPacket.size, clientAddr))
+                val outPacket = ByteArray(headerSlice.size + dnsResponse.size)
+                System.arraycopy(headerSlice, 0, outPacket, 0, headerSlice.size)
+                System.arraycopy(dnsResponse, 0, outPacket, headerSlice.size, dnsResponse.size)
+                try {
+                    if (!udpSocket.isClosed) {
+                        udpSocket.send(DatagramPacket(outPacket, outPacket.size, clientAddr))
+                    }
+                } catch (_: IOException) {
                 }
-            } catch (_: IOException) {
             }
             return
         }
 
-        // Tráfico UDP para juegos en línea, llamadas y QUIC -> puente BadVPN UDPGW (puerto 7300)
-        if (udpgwEnabled && udpgwClient != null && dstInet != null) {
-            if (atyp == 0x04 && !enableIpv6) return
-            val socksAddrHeader = data.copyOfRange(3, headerEnd)
+        if (!udpgwEnabled || udpgwClient == null) return
+        if (atyp == 0x04 && !enableIpv6) return
+
+        val socksAddrHeader = data.copyOfRange(3, headerEnd)
+        val knownInet = directInet
+        if (knownInet != null) {
+            // Envío directo en orden FIFO exacto para ping estable en juegos
             udpgwClient.sendUdpPacket(
                 udpSocket = udpSocket,
                 clientAddr = clientAddr,
-                dstAddress = dstInet,
+                atyp = atyp,
+                dstAddress = knownInet,
                 dstPort = dstPort,
                 socksAddrHeader = socksAddrHeader,
                 payload = payload
             )
+        } else if (domainToResolve != null) {
+            // Si llegó por dominio desde mapdns, resolvemos por dentro del túnel SSH y cacheamos
+            val host = domainToResolve
+            parentScope.launch {
+                val resolved = resolveDomainViaTunnel(host) ?: return@launch
+                udpgwClient.sendUdpPacket(
+                    udpSocket = udpSocket,
+                    clientAddr = clientAddr,
+                    atyp = atyp,
+                    dstAddress = resolved,
+                    dstPort = dstPort,
+                    socksAddrHeader = socksAddrHeader,
+                    payload = payload
+                )
+            }
         }
+    }
+
+    private fun resolveDomainViaTunnel(domain: String): InetAddress? {
+        domainIpv4Cache[domain]?.let { return it }
+
+        // Verificar si el string ya es una IPv4
+        if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(domain)) {
+            return try {
+                InetAddress.getByName(domain).also { domainIpv4Cache[domain] = it }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        val query = buildDnsAQuery(domain) ?: return null
+        val resp = resolveDnsOverSshTcp(query) ?: resolveDnsOverHttps443(query) ?: return null
+        val parsed = parseFirstARecord(resp) ?: return null
+        domainIpv4Cache[domain] = parsed
+        return parsed
+    }
+
+    private fun buildDnsAQuery(domain: String): ByteArray? {
+        val labels = domain.trim().trimEnd('.').split(".")
+        if (labels.isEmpty()) return null
+        val out = ByteArrayOutputStream(64)
+        // Header DNS estándar (ID=0x4843, RD=1, QDCOUNT=1)
+        out.write(byteArrayOf(0x48, 0x43, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+        for (lbl in labels) {
+            val bytes = lbl.toByteArray(Charsets.UTF_8)
+            if (bytes.isEmpty() || bytes.size > 63) return null
+            out.write(bytes.size)
+            out.write(bytes)
+        }
+        out.write(0x00)
+        // QTYPE=A (1), QCLASS=IN (1)
+        out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
+        return out.toByteArray()
+    }
+
+    private fun parseFirstARecord(resp: ByteArray): InetAddress? {
+        if (resp.size < 12) return null
+        val qdCount = ((resp[4].toInt() and 0xFF) shl 8) or (resp[5].toInt() and 0xFF)
+        val anCount = ((resp[6].toInt() and 0xFF) shl 8) or (resp[7].toInt() and 0xFF)
+        if (anCount <= 0) return null
+
+        var pos = 12
+        repeat(qdCount) {
+            pos = skipDnsName(resp, pos)
+            if (pos < 0 || pos + 4 > resp.size) return null
+            pos += 4
+        }
+
+        repeat(anCount) {
+            pos = skipDnsName(resp, pos)
+            if (pos < 0 || pos + 10 > resp.size) return null
+            val rType = ((resp[pos].toInt() and 0xFF) shl 8) or (resp[pos + 1].toInt() and 0xFF)
+            val rdLen = ((resp[pos + 8].toInt() and 0xFF) shl 8) or (resp[pos + 9].toInt() and 0xFF)
+            pos += 10
+            if (pos + rdLen > resp.size) return null
+            if (rType == 1 && rdLen == 4) {
+                return InetAddress.getByAddress(resp.copyOfRange(pos, pos + 4))
+            }
+            pos += rdLen
+        }
+        return null
+    }
+
+    private fun skipDnsName(buf: ByteArray, start: Int): Int {
+        var pos = start
+        var steps = 0
+        while (pos < buf.size && steps++ < 128) {
+            val len = buf[pos].toInt() and 0xFF
+            if (len == 0) return pos + 1
+            if ((len and 0xC0) == 0xC0) return if (pos + 2 <= buf.size) pos + 2 else -1
+            pos += 1 + len
+        }
+        return -1
     }
 
     private fun resolveDnsOverSshTcp(query: ByteArray): ByteArray? {
@@ -576,7 +684,7 @@ class LocalSocks5Server(
     private fun logRateLimited(msg: String) {
         val now = System.currentTimeMillis()
         val prev = lastErrorLogMs.get()
-        if (now - prev >= 8_000 && lastErrorLogMs.compareAndSet(prev, now)) {
+        if (now - prev >= 12_000 && lastErrorLogMs.compareAndSet(prev, now)) {
             onLog(msg, LogLevel.WARN)
         }
     }
