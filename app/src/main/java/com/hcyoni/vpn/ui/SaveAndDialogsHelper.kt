@@ -1,18 +1,26 @@
 package com.hcyoni.vpn.ui
 
+import android.annotation.SuppressLint
 import android.app.DatePickerDialog
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.text.Editable
 import android.text.InputType
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.View
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -29,6 +37,105 @@ import java.util.Date
 import java.util.Locale
 
 object SaveAndDialogsHelper {
+
+    @SuppressLint("SetJavaScriptEnabled")
+    fun configureBannerWebView(webView: WebView, context: Context) {
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        webView.settings.apply {
+            javaScriptEnabled = false
+            allowFileAccess = false
+            allowContentAccess = false
+            loadsImagesAutomatically = false
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val uri = request?.url ?: return false
+                val scheme = uri.scheme?.lowercase(Locale.US).orEmpty()
+                if (scheme == "http" || scheme == "https" || scheme == "whatsapp" || scheme == "tg") {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "No se encontró aplicación para abrir el enlace", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                return true
+            }
+        }
+    }
+
+    fun renderHtmlIntoWebView(webView: WebView, rawContent: String) {
+        val bodyHtml = if (rawContent.contains("<") && rawContent.contains(">")) {
+            rawContent
+        } else {
+            val escaped = TextUtils.htmlEncode(rawContent)
+                .replace("\n", "<br>")
+            val linked = escaped.replace(
+                Regex("(https?://[^\\s<]+)"),
+                "<a href=\"$1\">$1</a>"
+            )
+            "<p align=\"center\">$linked</p>"
+        }
+
+        val doc = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body {
+                margin: 0;
+                padding: 8px 6px;
+                background: transparent;
+                color: #F1F5F9;
+                font-family: sans-serif;
+                font-size: 13px;
+                line-height: 1.45;
+                word-wrap: break-word;
+              }
+              hr {
+                border: none;
+                border-top: 1px solid #28354E;
+                margin: 10px 0;
+              }
+              a {
+                color: #00E5FF;
+                text-decoration: none;
+              }
+            </style>
+            </head>
+            <body>$bodyHtml</body>
+            </html>
+        """.trimIndent()
+
+        webView.loadDataWithBaseURL(null, doc, "text/html", "UTF-8", null)
+    }
+
+    fun showFullBannerDialog(context: Context, title: String, htmlOrText: String) {
+        val wv = WebView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (context.resources.displayMetrics.heightPixels * 0.58).toInt()
+            )
+        }
+        configureBannerWebView(wv, context)
+        renderHtmlIntoWebView(wv, htmlOrText)
+
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0B111E"))
+            setPadding(16, 12, 16, 8)
+            addView(wv)
+        }
+
+        MaterialAlertDialogBuilder(context)
+            .setTitle(title)
+            .setView(container)
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
 
     fun showEncryptedSaveDialog(
         activity: AppCompatActivity,
@@ -180,15 +287,16 @@ object SaveAndDialogsHelper {
     fun showGameAndDnsDialog(
         context: Context,
         current: VpnConfig,
-        onApply: (udpgwOn: Boolean, udpgwPort: Int, customDnsOn: Boolean, dns1: String, dns2: String) -> Unit
+        onApply: (VpnConfig) -> Unit
     ) {
+        val scroll = ScrollView(context)
         val box = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 12)
         }
 
         val swUdpgw = CheckBox(context).apply {
-            text = "Activar Juegos / UDP (BadVPN UDPGW)"
+            text = "Modo Juegos / UDP (BadVPN UDPGW)"
             isChecked = current.udpgwEnabled
         }
         val etPort = EditText(context).apply {
@@ -197,32 +305,66 @@ object SaveAndDialogsHelper {
             setText(current.udpgwPort.toString())
         }
         val swDns = MaterialSwitch(context).apply {
-            text = "Usar DNS personalizado (apagado = DNS automático VPS)"
+            text = "Usar DNS personalizado (apagado = automático VPS)"
             isChecked = current.useCustomDns
         }
         val etDns1 = EditText(context).apply {
-            hint = "DNS Primario (ej: 8.8.8.8)"
+            hint = "DNS 1 (ej: 8.8.8.8)"
             setText(current.dnsServer)
         }
         val etDns2 = EditText(context).apply {
-            hint = "DNS Secundario (ej: 1.1.1.1)"
+            hint = "DNS 2 (ej: 1.1.1.1)"
             setText(current.secondaryDns)
         }
+        val etKeepAlive = EditText(context).apply {
+            hint = "Intervalo Ping SSH en segundos (25)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(current.keepAliveIntervalSec.toString())
+        }
+        val swHwidAuto = MaterialSwitch(context).apply {
+            text = "Autologin con HWID si usuario y clave están vacíos"
+            isChecked = current.useHwidWhenEmpty
+            isEnabled = !current.lockCredentials
+        }
+        val swReconnect = MaterialSwitch(context).apply {
+            text = "Reconexión automática ante caídas"
+            isChecked = current.autoReconnect
+        }
+        val swBoot = MaterialSwitch(context).apply {
+            text = "Reconectar al encender el teléfono"
+            isChecked = current.autoStartOnBoot
+        }
+        val swIpv6 = MaterialSwitch(context).apply {
+            text = "Permitir reenvío IPv6"
+            isChecked = current.enableIpv6
+        }
 
-        box.addView(swUdpgw)
-        box.addView(etPort)
-        box.addView(swDns)
-        box.addView(etDns1)
-        box.addView(etDns2)
+        listOf(swUdpgw, etPort, swDns, etDns1, etDns2, etKeepAlive, swHwidAuto, swReconnect, swBoot, swIpv6)
+            .forEach { box.addView(it) }
+        scroll.addView(box)
 
         MaterialAlertDialogBuilder(context)
-            .setTitle("Ajustes de Juegos (7300) y DNS")
-            .setView(box)
+            .setTitle("Juegos (7300), DNS y Red")
+            .setView(scroll)
             .setPositiveButton("Guardar") { _, _ ->
                 val port = etPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 7300
                 val d1 = etDns1.text?.toString()?.trim().orEmpty().ifBlank { "8.8.8.8" }
                 val d2 = etDns2.text?.toString()?.trim().orEmpty().ifBlank { "1.1.1.1" }
-                onApply(swUdpgw.isChecked, port, swDns.isChecked, d1, d2)
+                val ping = etKeepAlive.text?.toString()?.toIntOrNull()?.coerceIn(5, 120) ?: 25
+                onApply(
+                    current.copy(
+                        udpgwEnabled = swUdpgw.isChecked,
+                        udpgwPort = port,
+                        useCustomDns = swDns.isChecked,
+                        dnsServer = d1,
+                        secondaryDns = d2,
+                        keepAliveIntervalSec = ping,
+                        useHwidWhenEmpty = if (current.lockCredentials) current.useHwidWhenEmpty else swHwidAuto.isChecked,
+                        autoReconnect = swReconnect.isChecked,
+                        autoStartOnBoot = swBoot.isChecked,
+                        enableIpv6 = swIpv6.isChecked
+                    )
+                )
             }
             .setNegativeButton("Cancelar", null)
             .show()
@@ -230,7 +372,7 @@ object SaveAndDialogsHelper {
 
     fun showUsageCreditsDialog(context: Context, myHwid: String, onCopyPhone: () -> Unit) {
         val msg = """
-            Aplicación: hc Yoni VPN
+            Aplicación: HC YONI VPN
             Creador: Jonathan Gastón Gómez
             WhatsApp / Soporte: +54 9 3873 063499
             
@@ -239,9 +381,9 @@ object SaveAndDialogsHelper {
             
             Avisos de uso:
             • Modo Juegos activado por defecto en puerto 7300 (BadVPN UDPGW).
-            • Si dejas Usuario y Contraseña vacíos, hc Yoni intentará autenticar automáticamente usando tu HWID.
-            • Los archivos .yoni se guardan encriptados con AES-256 para abrirse únicamente dentro de hc Yoni.
-            • Para evitar cierres en segundo plano en Samsung o Xiaomi, activa "Sin restricciones" en el ícono del escudo verde.
+            • Si dejas Usuario y Contraseña vacíos, HC YONI intentará autenticar automáticamente usando tu HWID.
+            • Los archivos .yoni se guardan encriptados con AES-256 para abrirse únicamente dentro de HC YONI.
+            • Para evitar cierres en segundo plano en Samsung o Xiaomi, configura "Sin Suspensión / Batería" desde este menú.
         """.trimIndent()
 
         MaterialAlertDialogBuilder(context)
