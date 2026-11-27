@@ -17,6 +17,7 @@ import android.text.Spanned
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -28,13 +29,17 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.tabs.TabLayout
+import com.google.android.material.tabs.TabLayoutMediator
 import com.hcyoni.vpn.R
 import com.hcyoni.vpn.data.ConfigStore
 import com.hcyoni.vpn.data.VpnStateBus
 import com.hcyoni.vpn.databinding.ActivityMainBinding
+import com.hcyoni.vpn.databinding.PageConnectionBinding
+import com.hcyoni.vpn.databinding.PageLogsBinding
+import com.hcyoni.vpn.databinding.PagePayloadBinding
 import com.hcyoni.vpn.model.LogEntry
 import com.hcyoni.vpn.model.LogLevel
 import com.hcyoni.vpn.model.TrafficStats
@@ -49,9 +54,13 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var connBinding: PageConnectionBinding
+    private lateinit var payloadBinding: PagePayloadBinding
+    private lateinit var logsBinding: PageLogsBinding
+
     private var activeConfig: VpnConfig = VpnConfig()
     private var myHwid: String = ""
-    private var bannerDismissed = false
+    private var bannerHidden = false
     private var lastBannerTitle = ""
     private var lastBannerContent = ""
 
@@ -111,13 +120,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
+        connBinding = PageConnectionBinding.inflate(layoutInflater)
+        payloadBinding = PagePayloadBinding.inflate(layoutInflater)
+        logsBinding = PageLogsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         myHwid = SecurityAndDeviceHelper.getDeviceHwid(this)
         SaveAndDialogsHelper.configureBannerWebView(binding.webBannerPreview, this)
 
         applyInsets()
-        initTabs()
+        initSwipePages()
         initPayloadControls()
         initHostAutoParser()
         initClickEvents()
@@ -129,7 +141,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         val ok = BatteryAndSystemHelper.isIgnoringBatteryOptimizations(this)
-        binding.btnDrawerBattery.text = if (ok) "Sin Suspensión (Activo)" else "Sin Suspensión (Activar)"
+        binding.btnDrawerBattery.text = if (ok) "No Suspender App (Activo)" else "No Suspender App (Activar)"
     }
 
     override fun onDestroy() {
@@ -150,19 +162,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun initTabs() {
-        binding.tabLayout.addTab(binding.tabLayout.newTab().setText("Conexión"))
-        binding.tabLayout.addTab(binding.tabLayout.newTab().setText("Payload"))
-        binding.tabLayout.addTab(binding.tabLayout.newTab().setText("Registro"))
-        binding.tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab) {
-                binding.panelConnection.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
-                binding.panelPayload.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
-                binding.panelLogs.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
+    private fun initSwipePages() {
+        val pages = listOf(connBinding.root, payloadBinding.root, logsBinding.root)
+        binding.viewPager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount(): Int = pages.size
+            override fun getItemViewType(position: Int): Int = position
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val page = pages[viewType]
+                (page.parent as? ViewGroup)?.removeView(page)
+                page.layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                return object : RecyclerView.ViewHolder(page) {}
             }
-            override fun onTabUnselected(tab: TabLayout.Tab) {}
-            override fun onTabReselected(tab: TabLayout.Tab) {}
-        })
+
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {}
+        }
+        binding.viewPager.offscreenPageLimit = 2
+        TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, pos ->
+            tab.text = when (pos) {
+                0 -> "Conexión"
+                1 -> "Payload"
+                else -> "Registro"
+            }
+        }.attach()
     }
 
     private fun initPayloadControls() {
@@ -185,41 +209,41 @@ class MainActivity : AppCompatActivity() {
                 chipStrokeWidth = resources.displayMetrics.density
                 setOnClickListener {
                     if (activeConfig.lockPayload) return@setOnClickListener
-                    val ed = binding.etPayload.text ?: return@setOnClickListener
-                    val s = binding.etPayload.selectionStart.coerceAtLeast(0)
-                    val e = binding.etPayload.selectionEnd.coerceAtLeast(0)
+                    val ed = payloadBinding.etPayload.text ?: return@setOnClickListener
+                    val s = payloadBinding.etPayload.selectionStart.coerceAtLeast(0)
+                    val e = payloadBinding.etPayload.selectionEnd.coerceAtLeast(0)
                     ed.replace(minOf(s, e), maxOf(s, e), tag)
-                    binding.etPayload.requestFocus()
+                    payloadBinding.etPayload.requestFocus()
                 }
             }
-            binding.chipGroupTags.addView(chip)
+            payloadBinding.chipGroupTags.addView(chip)
         }
 
-        binding.chipPresetWs.setOnClickListener {
+        payloadBinding.chipPresetWs.setOnClickListener {
             if (!activeConfig.lockPayload) {
-                binding.etPayload.setText("GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
+                payloadBinding.etPayload.setText("GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
             }
         }
-        binding.chipPresetDirectSplit.setOnClickListener {
+        payloadBinding.chipPresetDirectSplit.setOnClickListener {
             if (!activeConfig.lockPayload) {
-                binding.etPayload.setText("GET / HTTP/1.1[crlf]Host: [sni][crlf][crlf][split]GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
+                payloadBinding.etPayload.setText("GET / HTTP/1.1[crlf]Host: [sni][crlf][crlf][split]GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
             }
         }
-        binding.chipPresetSslWs.setOnClickListener {
+        payloadBinding.chipPresetSslWs.setOnClickListener {
             if (!activeConfig.lockPayload) {
-                if (!activeConfig.lockServerAndProxy) binding.switchUseTls.isChecked = true
-                binding.etPayload.setText("GET wss://[host]/ HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
+                if (!activeConfig.lockServerAndProxy) connBinding.switchUseTls.isChecked = true
+                payloadBinding.etPayload.setText("GET wss://[host]/ HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]")
             }
         }
-        binding.chipPresetProxyConnect.setOnClickListener {
+        payloadBinding.chipPresetProxyConnect.setOnClickListener {
             if (!activeConfig.lockPayload) {
-                binding.etPayload.setText("CONNECT [host_port] HTTP/1.1[crlf]Host: [host_port][crlf]Proxy-Connection: Keep-Alive[crlf][crlf]")
+                payloadBinding.etPayload.setText("CONNECT [host_port] HTTP/1.1[crlf]Host: [host_port][crlf]Proxy-Connection: Keep-Alive[crlf][crlf]")
             }
         }
     }
 
     private fun initHostAutoParser() {
-        binding.etSshHost.addTextChangedListener(object : TextWatcher {
+        connBinding.etSshHost.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
@@ -234,14 +258,14 @@ class MainActivity : AppCompatActivity() {
                 val port = hostParts.getOrNull(1)?.trim()?.toIntOrNull()
                 val credParts = right.split(":", limit = 2)
                 if (host.isNotBlank()) {
-                    binding.etSshHost.removeTextChangedListener(this)
-                    binding.etSshHost.setText(host)
-                    binding.etSshHost.setSelection(host.length)
-                    binding.etSshHost.addTextChangedListener(this)
-                    if (port != null && port in 1..65535) binding.etSshPort.setText(port.toString())
+                    connBinding.etSshHost.removeTextChangedListener(this)
+                    connBinding.etSshHost.setText(host)
+                    connBinding.etSshHost.setSelection(host.length)
+                    connBinding.etSshHost.addTextChangedListener(this)
+                    if (port != null && port in 1..65535) connBinding.etSshPort.setText(port.toString())
                     if (!activeConfig.lockCredentials) {
-                        credParts.getOrNull(0)?.trim()?.takeIf { it.isNotEmpty() }?.let { binding.etUsername.setText(it) }
-                        credParts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let { binding.etPassword.setText(it) }
+                        credParts.getOrNull(0)?.trim()?.takeIf { it.isNotEmpty() }?.let { connBinding.etUsername.setText(it) }
+                        credParts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let { connBinding.etPassword.setText(it) }
                     }
                     showMsg("Cuenta SSH separada automáticamente")
                 }
@@ -259,13 +283,35 @@ class MainActivity : AppCompatActivity() {
         binding.btnDrawerCopyHwid.setOnClickListener {
             copyClipboard("HWID HC YONI", myHwid, "HWID copiado: $myHwid")
         }
-        binding.btnDrawerGameDnsSettings.setOnClickListener {
+        binding.btnDrawerWifiShare.setOnClickListener {
             binding.drawerLayout.closeDrawer(GravityCompat.START)
             val current = collectConfigFromUi()
-            SaveAndDialogsHelper.showGameAndDnsDialog(this, current) { updated ->
+            SaveAndDialogsHelper.showWifiShareDialog(
+                this,
+                current,
+                onCopyProxyAddr = { addr -> copyClipboard("Proxy Wi-Fi HC YONI", addr, "Copiado: $addr") },
+                onSave = { enabled, port ->
+                    val updated = current.copy(wifiShareEnabled = enabled, wifiSharePort = port)
+                    ConfigStore.saveConfig(this, updated)
+                    applyConfigToUi(updated)
+                    if (VpnStateBus.state.value == VpnState.CONNECTED) {
+                        startService(
+                            Intent(this, HcYoniVpnService::class.java).apply {
+                                action = HcYoniVpnService.ACTION_REFRESH_WIFI_SHARE
+                            }
+                        )
+                    }
+                    showMsg(if (enabled) "Pasar Wi-Fi activado (puerto $port)" else "Pasar Wi-Fi apagado")
+                }
+            )
+        }
+        binding.btnDrawerSettings.setOnClickListener {
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+            val current = collectConfigFromUi()
+            SaveAndDialogsHelper.showFullSettingsDialog(this, current) { updated ->
                 ConfigStore.saveConfig(this, updated)
                 applyConfigToUi(updated)
-                showMsg("Ajustes guardados (Juegos: ${updated.udpgwPort})")
+                showMsg("Ajustes guardados")
             }
         }
         binding.btnDrawerExcludedApps.setOnClickListener {
@@ -287,7 +333,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnDrawerBattery.setOnClickListener {
             binding.drawerLayout.closeDrawer(GravityCompat.START)
-            openBatteryDialog()
+            SaveAndDialogsHelper.showBatteryProtectionDialog(this)
         }
         binding.btnDrawerUsageNotice.setOnClickListener {
             binding.drawerLayout.closeDrawer(GravityCompat.START)
@@ -309,13 +355,17 @@ class MainActivity : AppCompatActivity() {
                 SaveAndDialogsHelper.showFullBannerDialog(this, lastBannerTitle, lastBannerContent)
             }
         }
-        binding.btnDismissBanner.setOnClickListener {
-            bannerDismissed = true
-            binding.cardBanner.visibility = View.GONE
+        binding.btnHideBanner.setOnClickListener {
+            bannerHidden = true
+            updateBannerDisplay(VpnStateBus.serverBanner.value)
+        }
+        binding.btnShowBannerPill.setOnClickListener {
+            bannerHidden = false
+            updateBannerDisplay(VpnStateBus.serverBanner.value)
         }
 
-        binding.switchUseTls.setOnCheckedChangeListener { _, checked ->
-            binding.tilSniHost.visibility = if (checked) View.VISIBLE else View.GONE
+        connBinding.switchUseTls.setOnCheckedChangeListener { _, checked ->
+            connBinding.tilSniHost.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
         binding.btnConnectToggle.setOnClickListener {
@@ -327,19 +377,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.btnClearPayload.setOnClickListener {
-            if (!activeConfig.lockPayload) binding.etPayload.setText("")
+        payloadBinding.btnClearPayload.setOnClickListener {
+            if (!activeConfig.lockPayload) payloadBinding.etPayload.setText("")
         }
-        binding.btnSaveConfig.setOnClickListener {
+        payloadBinding.btnSaveConfig.setOnClickListener {
             val cfg = collectConfigFromUi()
             ConfigStore.saveConfig(this, cfg)
             applyConfigToUi(cfg)
             showMsg("Configuración guardada")
         }
-        binding.btnCopyLogs.setOnClickListener {
-            copyClipboard("HC YONI Logs", binding.tvLogs.text?.toString().orEmpty(), "Registro copiado")
+        logsBinding.btnCopyLogs.setOnClickListener {
+            copyClipboard("HC YONI Logs", logsBinding.tvLogs.text?.toString().orEmpty(), "Registro copiado")
         }
-        binding.btnClearLogs.setOnClickListener { VpnStateBus.clearLogs() }
+        logsBinding.btnClearLogs.setOnClickListener { VpnStateBus.clearLogs() }
     }
 
     private fun openSaveDialog() {
@@ -355,7 +405,7 @@ class MainActivity : AppCompatActivity() {
     private fun processImportedRaw(raw: String, pass: String) {
         try {
             val imported = SecurityAndDeviceHelper.decryptYoniConfig(raw, pass)
-            bannerDismissed = false
+            bannerHidden = false
             VpnStateBus.setServerBanner(null)
             ConfigStore.saveConfig(this, imported)
             applyConfigToUi(imported)
@@ -374,7 +424,7 @@ class MainActivity : AppCompatActivity() {
                 if (VpnStateBus.state.value != VpnState.DISCONNECTED) {
                     startService(Intent(this, HcYoniVpnService::class.java).apply { action = HcYoniVpnService.ACTION_DISCONNECT })
                 }
-                bannerDismissed = false
+                bannerHidden = false
                 VpnStateBus.setServerBanner(null)
                 val blank = VpnConfig()
                 ConfigStore.saveConfig(this, blank)
@@ -389,12 +439,12 @@ class MainActivity : AppCompatActivity() {
         val cfg = collectConfigFromUi()
         if (cfg.sshHost.isBlank()) {
             showMsg("Ingresa el Host o IP del servidor SSH")
-            binding.tabLayout.getTabAt(0)?.select()
+            binding.viewPager.setCurrentItem(0, true)
             return
         }
         if (cfg.username.isBlank() && !cfg.useHwidWhenEmpty) {
-            showMsg("Ingresa el Usuario SSH o activa autologin por HWID en el Menú")
-            binding.tabLayout.getTabAt(0)?.select()
+            showMsg("Ingresa el Usuario SSH o activa autologin por HWID en Ajustes")
+            binding.viewPager.setCurrentItem(0, true)
             return
         }
         ConfigStore.saveConfig(this, cfg)
@@ -422,63 +472,68 @@ class MainActivity : AppCompatActivity() {
     private fun applyConfigToUi(config: VpnConfig) {
         activeConfig = config
         binding.tvLockedBadge.visibility = if (config.hasAnyLock()) View.VISIBLE else View.GONE
-        binding.tvLockNoticeSsh.visibility =
+        connBinding.tvLockNoticeSsh.visibility =
             if (config.lockServerAndProxy || config.lockCredentials) View.VISIBLE else View.GONE
-        binding.tvPayloadLockedBanner.visibility = if (config.lockPayload) View.VISIBLE else View.GONE
+        payloadBinding.tvPayloadLockedBanner.visibility = if (config.lockPayload) View.VISIBLE else View.GONE
 
-        binding.etProfileName.setText(config.profileName)
+        connBinding.etProfileName.setText(config.profileName)
 
         if (config.lockServerAndProxy) {
-            binding.etSshHost.setText("🔒 Servidor protegido")
-            binding.etSshPort.setText("***")
-            binding.etProxyHost.setText("🔒 Protegido")
-            binding.etProxyPort.setText("***")
-            binding.etSniHost.setText("🔒 Protegido")
+            connBinding.etSshHost.setText("🔒 Servidor protegido")
+            connBinding.etSshPort.setText("***")
+            connBinding.etProxyHost.setText("🔒 Protegido")
+            connBinding.etProxyPort.setText("***")
+            connBinding.etSniHost.setText("🔒 Protegido")
         } else {
-            binding.etSshHost.setText(config.sshHost)
-            binding.etSshPort.setText(config.sshPort.toString())
-            binding.etProxyHost.setText(config.proxyHost)
-            binding.etProxyPort.setText(config.proxyPort.toString())
-            binding.etSniHost.setText(config.sniHost)
+            connBinding.etSshHost.setText(config.sshHost)
+            connBinding.etSshPort.setText(config.sshPort.toString())
+            connBinding.etProxyHost.setText(config.proxyHost)
+            connBinding.etProxyPort.setText(config.proxyPort.toString())
+            connBinding.etSniHost.setText(config.sniHost)
         }
         val srvEditable = !config.lockServerAndProxy
-        binding.etSshHost.isEnabled = srvEditable
-        binding.etSshPort.isEnabled = srvEditable
-        binding.etProxyHost.isEnabled = srvEditable
-        binding.etProxyPort.isEnabled = srvEditable
-        binding.etSniHost.isEnabled = srvEditable
-        binding.switchUseTls.isEnabled = srvEditable
-        binding.switchUseTls.isChecked = config.useTls
-        binding.tilSniHost.visibility = if (config.useTls) View.VISIBLE else View.GONE
+        connBinding.etSshHost.isEnabled = srvEditable
+        connBinding.etSshPort.isEnabled = srvEditable
+        connBinding.etProxyHost.isEnabled = srvEditable
+        connBinding.etProxyPort.isEnabled = srvEditable
+        connBinding.etSniHost.isEnabled = srvEditable
+        connBinding.switchUseTls.isEnabled = srvEditable
+        connBinding.switchUseTls.isChecked = config.useTls
+        connBinding.tilSniHost.visibility = if (config.useTls) View.VISIBLE else View.GONE
 
         if (config.lockCredentials) {
-            binding.etUsername.setText("🔒 Protegido")
-            binding.etPassword.setText("")
-            binding.etPrivateKey.setText("")
+            connBinding.etUsername.setText("🔒 Protegido")
+            connBinding.etPassword.setText("")
+            connBinding.etPrivateKey.setText("")
         } else {
-            binding.etUsername.setText(config.username)
-            binding.etPassword.setText(config.password)
-            binding.etPrivateKey.setText(config.privateKey)
+            connBinding.etUsername.setText(config.username)
+            connBinding.etPassword.setText(config.password)
+            connBinding.etPrivateKey.setText(config.privateKey)
         }
         val credEditable = !config.lockCredentials
-        binding.etUsername.isEnabled = credEditable
-        binding.etPassword.isEnabled = credEditable
-        binding.etPrivateKey.isEnabled = credEditable
+        connBinding.etUsername.isEnabled = credEditable
+        connBinding.etPassword.isEnabled = credEditable
+        connBinding.etPrivateKey.isEnabled = credEditable
 
         binding.btnDrawerExcludedApps.text = "Aplicaciones excluidas (${config.excludedApps.size})"
+        binding.btnDrawerWifiShare.text = when {
+            !config.allowWifiShare -> "Pasar Wi-Fi (🔒 Bloqueado)"
+            config.wifiShareEnabled -> "Pasar Wi-Fi (Activo :${config.wifiSharePort})"
+            else -> "Pasar Wi-Fi (Apagado)"
+        }
 
         if (config.lockPayload) {
-            binding.etPayload.setText("🔒 Payload encriptado y bloqueado por el creador")
+            payloadBinding.etPayload.setText("🔒 Payload encriptado y bloqueado por el creador")
         } else {
-            binding.etPayload.setText(config.payload)
+            payloadBinding.etPayload.setText(config.payload)
         }
         val payEditable = !config.lockPayload
-        binding.etPayload.isEnabled = payEditable
-        binding.btnClearPayload.isEnabled = payEditable
-        binding.chipPresetWs.isEnabled = payEditable
-        binding.chipPresetDirectSplit.isEnabled = payEditable
-        binding.chipPresetSslWs.isEnabled = payEditable
-        binding.chipPresetProxyConnect.isEnabled = payEditable
+        payloadBinding.etPayload.isEnabled = payEditable
+        payloadBinding.btnClearPayload.isEnabled = payEditable
+        payloadBinding.chipPresetWs.isEnabled = payEditable
+        payloadBinding.chipPresetDirectSplit.isEnabled = payEditable
+        payloadBinding.chipPresetSslWs.isEnabled = payEditable
+        payloadBinding.chipPresetProxyConnect.isEnabled = payEditable
 
         updateBannerDisplay(VpnStateBus.serverBanner.value)
     }
@@ -488,7 +543,7 @@ class MainActivity : AppCompatActivity() {
         val credLocked = activeConfig.lockCredentials
         val payLocked = activeConfig.lockPayload
 
-        val rawHost = if (srvLocked) activeConfig.sshHost else binding.etSshHost.text?.toString()?.trim().orEmpty()
+        val rawHost = if (srvLocked) activeConfig.sshHost else connBinding.etSshHost.text?.toString()?.trim().orEmpty()
         var cleanHost = rawHost
         var portFromHost: Int? = null
         if (!srvLocked && rawHost.contains(":") && !rawHost.contains(";") && rawHost.count { it == ':' } == 1) {
@@ -500,22 +555,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val sshPort = if (srvLocked) activeConfig.sshPort else (portFromHost ?: binding.etSshPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 22)
-        val proxyHost = if (srvLocked) activeConfig.proxyHost else binding.etProxyHost.text?.toString()?.trim().orEmpty()
-        val proxyPort = if (srvLocked) activeConfig.proxyPort else (binding.etProxyPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 80)
+        val sshPort = if (srvLocked) activeConfig.sshPort else (portFromHost ?: connBinding.etSshPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 22)
+        val proxyHost = if (srvLocked) activeConfig.proxyHost else connBinding.etProxyHost.text?.toString()?.trim().orEmpty()
+        val proxyPort = if (srvLocked) activeConfig.proxyPort else (connBinding.etProxyPort.text?.toString()?.toIntOrNull()?.coerceIn(1, 65535) ?: 80)
 
         return activeConfig.copy(
-            profileName = binding.etProfileName.text?.toString()?.trim().orEmpty().ifBlank { "Servidor HC YONI" },
+            profileName = connBinding.etProfileName.text?.toString()?.trim().orEmpty().ifBlank { "Servidor HC YONI" },
             sshHost = cleanHost,
             sshPort = sshPort,
             proxyHost = proxyHost,
             proxyPort = proxyPort,
-            useTls = if (srvLocked) activeConfig.useTls else binding.switchUseTls.isChecked,
-            sniHost = if (srvLocked) activeConfig.sniHost else binding.etSniHost.text?.toString()?.trim().orEmpty(),
-            username = if (credLocked) activeConfig.username else binding.etUsername.text?.toString()?.trim().orEmpty(),
-            password = if (credLocked) activeConfig.password else binding.etPassword.text?.toString().orEmpty(),
-            privateKey = if (credLocked) activeConfig.privateKey else binding.etPrivateKey.text?.toString().orEmpty(),
-            payload = if (payLocked) activeConfig.payload else binding.etPayload.text?.toString().orEmpty()
+            useTls = if (srvLocked) activeConfig.useTls else connBinding.switchUseTls.isChecked,
+            sniHost = if (srvLocked) activeConfig.sniHost else connBinding.etSniHost.text?.toString()?.trim().orEmpty(),
+            username = if (credLocked) activeConfig.username else connBinding.etUsername.text?.toString()?.trim().orEmpty(),
+            password = if (credLocked) activeConfig.password else connBinding.etPassword.text?.toString().orEmpty(),
+            privateKey = if (credLocked) activeConfig.privateKey else connBinding.etPrivateKey.text?.toString().orEmpty(),
+            payload = if (payLocked) activeConfig.payload else payloadBinding.etPayload.text?.toString().orEmpty()
         )
     }
 
@@ -528,7 +583,7 @@ class MainActivity : AppCompatActivity() {
                 launch { VpnStateBus.logs.collect { drawLogs(it) } }
                 launch {
                     VpnStateBus.serverBanner.collect { banner ->
-                        if (!banner.isNullOrBlank()) bannerDismissed = false
+                        if (!banner.isNullOrBlank()) bannerHidden = false
                         updateBannerDisplay(banner)
                     }
                 }
@@ -537,17 +592,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateBannerDisplay(vpsBanner: String?) {
-        if (bannerDismissed) {
-            binding.cardBanner.visibility = View.GONE
-            return
-        }
         val note = activeConfig.configNote.trim()
         val vps = if (activeConfig.hideServerBanner) "" else vpsBanner?.trim().orEmpty()
 
         val (title, body) = when {
             note.isNotEmpty() && vps.isNotEmpty() -> "📢 AVISO DEL ARCHIVO Y VPS" to "$note<hr>$vps"
             note.isNotEmpty() -> "📢 AVISO DEL ARCHIVO" to note
-            vps.isNotEmpty() -> "🖥️ BANNER DEL SERVIDOR" to vps
+            vps.isNotEmpty() -> "🖥️ BANNER DE LA VPS" to vps
             else -> "" to ""
         }
 
@@ -555,11 +606,20 @@ class MainActivity : AppCompatActivity() {
             lastBannerTitle = ""
             lastBannerContent = ""
             binding.cardBanner.visibility = View.GONE
+            binding.btnShowBannerPill.visibility = View.GONE
             return
         }
 
         lastBannerTitle = title
         lastBannerContent = body
+
+        if (bannerHidden) {
+            binding.cardBanner.visibility = View.GONE
+            binding.btnShowBannerPill.visibility = View.VISIBLE
+            return
+        }
+
+        binding.btnShowBannerPill.visibility = View.GONE
         binding.tvBannerTitle.text = title
         SaveAndDialogsHelper.renderHtmlIntoWebView(binding.webBannerPreview, body)
         binding.cardBanner.visibility = View.VISIBLE
@@ -631,7 +691,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun drawLogs(entries: List<LogEntry>) {
         if (entries.isEmpty()) {
-            binding.tvLogs.text = "Sin registros aún. Toca CONECTAR para ver el túnel."
+            logsBinding.tvLogs.text = "Sin registros aún. Toca CONECTAR para ver el túnel."
             return
         }
         val green = ContextCompat.getColor(this, R.color.accent_green)
@@ -653,18 +713,8 @@ class MainActivity : AppCompatActivity() {
             sb.setSpan(ForegroundColorSpan(col), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (idx < entries.lastIndex) sb.append('\n')
         }
-        binding.tvLogs.text = sb
-        binding.scrollLogs.post { binding.scrollLogs.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    private fun openBatteryDialog() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Protección Sin Suspensión")
-            .setMessage(BatteryAndSystemHelper.getBackgroundProtectionGuide())
-            .setPositiveButton("Sin restricciones") { _, _ -> BatteryAndSystemHelper.requestIgnoreBatteryOptimization(this) }
-            .setNeutralButton("VPN siempre activa") { _, _ -> BatteryAndSystemHelper.openVpnSystemSettings(this) }
-            .setNegativeButton("Ajustes app") { _, _ -> BatteryAndSystemHelper.openAppBatterySettings(this) }
-            .show()
+        logsBinding.tvLogs.text = sb
+        logsBinding.scrollLogs.post { logsBinding.scrollLogs.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun launchWhatsApp() {
